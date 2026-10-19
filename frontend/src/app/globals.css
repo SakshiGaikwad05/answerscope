@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* Design tokens. The app uses a single light theme; status colors are reserved
+   for state (pass / warning / fail) and always paired with a text label. */
+:root {
+  --background: #f7f8fa;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-soft: #eef2ff;
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

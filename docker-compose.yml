@@ -1,0 +1,57 @@
+# Production-style stack: Postgres, API, job worker and frontend.
+#   cp .env.production.example .env.production   (fill in secrets)
+#   docker compose --env-file .env.production up -d --build
+# Only the frontend is published; put an HTTPS reverse proxy (Caddy, nginx, a load balancer) in front of it.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aeo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: aeo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aeo"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg://aeo:${POSTGRES_PASSWORD}@db:5432/aeo
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      JOB_MODE: worker
+      COOKIE_SECURE: "true"
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      QUOTA_VISIBILITY_RUNS_PER_USER_PER_DAY: ${QUOTA_VISIBILITY_RUNS_PER_USER_PER_DAY:-3}
+      QUOTA_VISIBILITY_RUNS_GLOBAL_PER_DAY: ${QUOTA_VISIBILITY_RUNS_GLOBAL_PER_DAY:-20}
+      LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    # Not published: only reachable from the frontend container.
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment: *backend_env
+    depends_on:
+      - api   # the API container applies database migrations on start
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
