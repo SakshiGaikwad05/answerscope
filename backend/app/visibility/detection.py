@@ -108,6 +108,14 @@ def extract_urls(text: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def _title_is_domain(title: str | None, domain: str) -> bool:
+    """Gemini cites through Google redirect URLs and puts the source domain in the title."""
+    t = (title or "").strip().lower()
+    if not t or " " in t or "." not in t:
+        return False
+    return url_matches_domain("https://" + t, domain)
+
+
 def url_matches_domain(url: str, domain: str) -> bool:
     host = domain_of(url)
     if not host or not domain:
@@ -140,7 +148,9 @@ def analyze_entity(text: str, sources: list[dict], entity: EntitySpec) -> list[d
     if entity.domain:
         evidence = []
         for src in sources:
-            if src.get("type") == "cited" and url_matches_domain(src.get("url", ""), entity.domain):
+            if src.get("type") == "cited" and (
+                url_matches_domain(src.get("url", ""), entity.domain) or _title_is_domain(src.get("title"), entity.domain)
+            ):
                 evidence.append({"type": "cited_source", "url": src["url"], "title": src.get("title")})
         for url in extract_urls(text):
             if url_matches_domain(url, entity.domain) and all(e["url"] != url for e in evidence):

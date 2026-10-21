@@ -29,9 +29,10 @@ from app.models import (
     VisibilityRun,
     WebsiteAudit,
 )
-from app.providers.base import AIProvider, ProviderError
+from app.providers.base import AIProvider, ProviderError, SearchLocation
 from app.providers.registry import get_provider
 from app.services.recommendations import refresh_recommendations
+from app.services.user_keys import user_settings
 from app.visibility.detection import EntitySpec, analyze_answer, domain_of
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,9 @@ def run_audit_job(audit_id: int) -> None:
         try:
             crawl = crawler.crawl(project.website_url, progress=progress)
             progress("Analyzing pages")
-            outcome = audit_analysis.evaluate(crawl, project.brand_name)
+            profile = {k: getattr(project, k) for k in ("city", "region", "country", "service_area", "address", "phone",
+                                                        "opening_hours", "services", "profile_urls", "industry")}
+            outcome = audit_analysis.evaluate(crawl, project.brand_name, profile)
             for cp in crawl.pages:
                 p = cp.data
                 db.add(
@@ -213,6 +216,8 @@ def build_run_conditions(project: Project, provider: AIProvider, questions: list
             {"id": c.id, "name": c.name, "domain": domain_of(c.website_url)} for c in project.competitors
         ],
         "question_ids": [q.id for q in questions],
+        # Location used to localize web search and to judge location relevance
+        "location": {k: getattr(project, k) for k in ("city", "region", "country", "service_area") if getattr(project, k, None)},
     }
 
 
@@ -224,7 +229,7 @@ def run_visibility_job(run_id: int, max_workers: int = 3) -> None:
         project = run.project
         cond = run.conditions
         try:
-            provider = get_provider(run.provider)
+            provider = get_provider(run.provider, user_settings(db, project.user_id))
         except KeyError:
             _fail(db, run, f"Unknown provider {run.provider}")
             return
@@ -247,7 +252,11 @@ def run_visibility_job(run_id: int, max_workers: int = 3) -> None:
 
         fatal_error: str | None = None
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(provider.answer, q.text): q for q in questions}
+            loc = cond.get("location") or {}
+            location = SearchLocation(city=loc.get("city"), region=loc.get("region"), country=loc.get("country"))
+            ask = (lambda text: provider.answer(text, location=location)) if provider.supports_location and not location.is_empty() \
+                else provider.answer
+            futures = {pool.submit(ask, q.text): q for q in questions}
             for future in as_completed(futures):
                 if future.cancelled():
                     continue
@@ -296,6 +305,9 @@ def run_visibility_job(run_id: int, max_workers: int = 3) -> None:
                 run.completed_questions += 1
                 db.commit()
 
+        if not fatal_error:
+            _extract_recommended_businesses(db, run)
+
         successes = db.scalar(
             select(ProviderAnswer.id).where(ProviderAnswer.run_id == run.id, ProviderAnswer.error.is_(None)).limit(1)
         )
@@ -309,3 +321,21 @@ def run_visibility_job(run_id: int, max_workers: int = 3) -> None:
             db.commit()
         logger.info("run %s finished with status %s", run.id, run.status)
         _safe_refresh(db, project)
+
+
+def _extract_recommended_businesses(db: Session, run: VisibilityRun) -> None:
+    """Optional: list the businesses each answer recommends, using the NVIDIA analysis model only."""
+    from app.providers.nvidia_provider import NvidiaAnalysisProvider
+    from app.providers.registry import analysis_provider
+    from app.visibility.extraction import extract_businesses
+
+    provider = analysis_provider(user_settings(db, run.project.user_id))
+    if not isinstance(provider, NvidiaAnalysisProvider) and getattr(provider, "name", None) != "nvidia":
+        return  # don't spend assistant credits on extraction
+    for answer in run.answers:
+        if answer.error or not answer.answer_text or answer.analysis:
+            continue
+        businesses = extract_businesses(provider, answer.question_text, answer.answer_text)
+        if businesses is not None:
+            answer.analysis = {"source": "nvidia", "model": provider.model, "businesses": businesses}
+            db.commit()

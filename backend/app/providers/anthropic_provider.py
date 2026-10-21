@@ -14,7 +14,8 @@ import time
 import anthropic
 
 from app.config import Settings
-from app.providers.base import AIProvider, ProviderAnswer, ProviderError, ProviderNotConfiguredError
+from app.providers.base import AIProvider, ProviderAnswer, ProviderError, ProviderNotConfiguredError, SearchLocation
+from app.providers.common import key_setup
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,9 @@ def parse_response_content(content: list) -> tuple[str, list[dict]]:
 class AnthropicProvider(AIProvider):
     name = "anthropic"
     display_name = "Anthropic Claude (API)"
+    assistant = "Claude"
+    experience = "Claude API with live web search. Close to Claude's search mode, but not identical to the Claude app."
+    supports_location = True
 
     def __init__(self, settings: Settings, client: anthropic.Anthropic | None = None) -> None:
         self.settings = settings
@@ -78,10 +82,10 @@ class AnthropicProvider(AIProvider):
         return self._client is not None or self.settings.anthropic_configured
 
     def setup_instructions(self) -> str:
-        return (
+        return key_setup(self.settings, "anthropic", (
             "Set ANTHROPIC_API_KEY in backend/.env (create a key at https://console.anthropic.com/), "
             "then restart the backend. Optional: AEO_ANTHROPIC_MODEL, AEO_ANTHROPIC_WEB_SEARCH."
-        )
+        ))
 
     @property
     def model(self) -> str:
@@ -139,16 +143,17 @@ class AnthropicProvider(AIProvider):
         except anthropic.APIConnectionError as exc:
             raise ProviderError("Could not connect to the Anthropic API.", retryable=True) from exc
 
-    def answer(self, question: str) -> ProviderAnswer:
+    def answer(self, question: str, location: SearchLocation | None = None) -> ProviderAnswer:
         tools = []
         if self.settings.anthropic_web_search:
-            tools.append(
-                {
-                    "type": "web_search_20260209",
-                    "name": "web_search",
-                    "max_uses": self.settings.anthropic_web_search_max_uses,
-                }
-            )
+            tool = {
+                "type": "web_search_20260209",
+                "name": "web_search",
+                "max_uses": self.settings.anthropic_web_search_max_uses,
+            }
+            if location and not location.is_empty():
+                tool["user_location"] = location.as_user_location()
+            tools.append(tool)
         messages: list[dict] = [{"role": "user", "content": question}]
         kwargs: dict = {
             "model": self.model,

@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # Absolute path, so the file is found regardless of the working directory.
@@ -71,6 +71,37 @@ class Settings(BaseSettings):
 
     visibility_max_questions: int = Field(default=20, ge=1, le=50)
 
+    # --- Users' own API keys ("bring your own key"). Saved keys are encrypted with this Fernet key;
+    # generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Changing it makes saved keys unreadable (users are asked to re-enter them). Unset = saving keys is disabled.
+    secrets_key: SecretStr | None = Field(default=None, validation_alias=AliasChoices("AEO_SECRETS_KEY"))
+    # Shared secret the Next.js frontend sends with every /api request (BACKEND_PROXY_SECRET there).
+    # When set, the API refuses requests without it, so a publicly reachable backend can't be called directly
+    # and the client IP it passes (x-aeo-client-ip) can be trusted for rate limiting.
+    proxy_secret: SecretStr | None = Field(default=None, validation_alias=AliasChoices("AEO_PROXY_SECRET"))
+    # false: never use this server's own provider keys for users (public deployments where users pay for their tests)
+    use_server_api_keys: bool = Field(default=True, validation_alias=AliasChoices("AEO_USE_SERVER_API_KEYS"))
+
+    # --- Other AI assistants (official APIs). Leave a key empty to skip that assistant.
+    openai_api_key: SecretStr | None = None
+    openai_model: str = Field(default="gpt-5.5", validation_alias=AliasChoices("AEO_OPENAI_MODEL"))
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = Field(default="gemini-3.8-flash", validation_alias=AliasChoices("AEO_GEMINI_MODEL"))
+    perplexity_api_key: SecretStr | None = None
+    # Agent API preset; all presets include web search. "low" = everyday research (formerly pro-search).
+    perplexity_preset: Literal["fast", "low", "medium", "high"] = Field(
+        default="low", validation_alias=AliasChoices("AEO_PERPLEXITY_PRESET")
+    )
+    provider_timeout_seconds: float = Field(default=120.0, gt=0, le=600, validation_alias=AliasChoices("AEO_PROVIDER_TIMEOUT_SECONDS"))
+
+    # --- NVIDIA-hosted models (analysis only: questions, entity extraction, outreach drafts).
+    nvidia_api_key: SecretStr | None = None
+    nvidia_base_url: str = Field(default="https://integrate.api.nvidia.com/v1", validation_alias=AliasChoices("AEO_NVIDIA_BASE_URL"))
+    nvidia_model: str = Field(default="meta/llama-3.3-70b-instruct", validation_alias=AliasChoices("AEO_NVIDIA_MODEL"))
+
+    # --- Web search APIs for backlink / brand-mention discovery (Perplexity Search API is used if its key is set)
+    brave_api_key: SecretStr | None = None
+
     # Accounts
     allow_registration: bool = True
     session_days: int = Field(default=30, ge=1, le=365)
@@ -78,13 +109,15 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
 
     # Usage limits for AI actions that cost money (rolling 24 hours). 0 disables the action.
-    quota_visibility_runs_per_user_per_day: int = Field(default=3, ge=0)
+    quota_visibility_runs_per_user_per_day: int = Field(default=8, ge=0)
     quota_question_generations_per_user_per_day: int = Field(default=10, ge=0)
     quota_fix_generations_per_user_per_day: int = Field(default=20, ge=0)
     # Hard caps across all users: a ceiling on what the server's API key can be used for per day.
-    quota_visibility_runs_global_per_day: int = Field(default=20, ge=0)
+    quota_visibility_runs_global_per_day: int = Field(default=60, ge=0)
     quota_question_generations_global_per_day: int = Field(default=100, ge=0)
     quota_fix_generations_global_per_day: int = Field(default=200, ge=0)
+    quota_backlink_discoveries_per_user_per_day: int = Field(default=3, ge=0)
+    quota_backlink_discoveries_global_per_day: int = Field(default=30, ge=0)
 
     # Request rate limits (per client IP / per user, per minute)
     rate_limit_auth_per_minute: int = Field(default=10, ge=1)
@@ -99,9 +132,26 @@ class Settings(BaseSettings):
     render_max_pages: int = Field(default=8, ge=1, le=30)
     render_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
 
+    @field_validator("database_url")
+    @classmethod
+    def _psycopg_driver(cls, v: str) -> str:
+        # Hosts like Render and Heroku hand out postgres:// or postgresql:// URLs; use the psycopg 3 driver.
+        for prefix in ("postgres://", "postgresql://"):
+            if v.startswith(prefix):
+                return "postgresql+psycopg://" + v[len(prefix):]
+        return v
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @staticmethod
+    def has_key(value: SecretStr | None) -> bool:
+        return bool(value and value.get_secret_value().strip())
+
+    @property
+    def user_keys_enabled(self) -> bool:
+        return self.has_key(self.secrets_key)
 
     @property
     def anthropic_configured(self) -> bool:

@@ -6,6 +6,9 @@ import { useEffect, useState } from "react";
 
 import { AUTH_CHANGED_EVENT, api, type User } from "@/lib/api";
 
+const navCls = (active: boolean) =>
+  `rounded-lg px-3 py-2 ${active ? "bg-slate-100 font-medium text-slate-900" : "text-slate-700 hover:bg-slate-100"}`;
+
 export function AuthNav() {
   const router = useRouter();
   const pathname = usePathname();
@@ -49,7 +52,8 @@ export function AuthNav() {
 
   return (
     <div className="flex items-center gap-1 text-sm">
-      <Link href="/projects" className="rounded-lg px-3 py-2 text-slate-700 hover:bg-slate-100">Projects</Link>
+      <Link href="/projects" className={navCls(pathname.startsWith("/projects") && pathname !== "/projects/new")}>Projects</Link>
+      <Link href="/keys" className={navCls(pathname === "/keys")}>API keys</Link>
       <Link href="/projects/new" className="rounded-lg bg-accent px-3 py-2 font-medium text-white hover:bg-accent-hover">
         New project
       </Link>

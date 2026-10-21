@@ -381,3 +381,13 @@ def test_rendered_site_keeps_blocking_js_item_but_measures_content():
     assert recs[0]["key"] == "crawl:js-rendering" and recs[0]["blocking"]
     assert "We rendered your pages in a browser" in recs[0]["action"]
     assert any(r["key"].startswith("content:") for r in recs)  # content now measurable, so content items appear
+
+
+def test_local_template_questions_name_the_city():
+    ctx = QuestionContext(brand="Gawande Krushi Kendra", industry="agricultural store", competitors=["BigHaat"],
+                          website_url="https://gkk.example", city="Akola", services=["Seeds"])
+    qs = template_questions(ctx)
+    assert len(qs) == 20 and len({q.text for q in qs}) == 20 and {q.category for q in qs} == set(CATEGORIES)
+    assert sum("Akola" in q.text for q in qs) >= 15
+    assert "What is the best agricultural store in Akola?" in [q.text for q in qs]
+    assert any("offer Seeds" in q.text for q in qs)

@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { FixPanel } from "@/components/FixPanel";
 import { useProject } from "@/components/ProjectContext";
 import { Badge, Button, EmptyState, ErrorState, Loading, cx } from "@/components/ui";
-import { api, type Level, type RecStatus, type Recommendation } from "@/lib/api";
+import { REC_GROUPS, api, type Level, type RecStatus, type Recommendation } from "@/lib/api";
 import { dateTime } from "@/lib/format";
 
 const CATEGORY_NAMES: Record<string, string> = {
@@ -19,6 +19,8 @@ const CATEGORY_NAMES: Record<string, string> = {
   structured_data: "Structured data",
   crawlability: "Crawlability",
   data_quality: "Data quality",
+  local: "Local SEO",
+  backlinks: "Backlinks & mentions",
 };
 
 const STATUS_LABELS: Record<RecStatus, string> = {
@@ -257,9 +259,22 @@ export default function ActionPlanPage() {
           description={view === "todo" ? "Re-run the audit and visibility test to confirm your fixes." : undefined}
         />
       ) : (
-        <ol className="space-y-4">
-          {shown.map((r) => <ActionItem key={r.id} rec={r} onChange={update} />)}
-        </ol>
+        <div className="space-y-8">
+          {REC_GROUPS.map((g) => {
+            const inGroup = shown.filter((r) => (r.group ?? "technical") === g.id);
+            if (inGroup.length === 0) return null;
+            return (
+              <section key={g.id} aria-labelledby={`grp-${g.id}`}>
+                <h2 id={`grp-${g.id}`} className="mb-3 text-base font-semibold text-slate-900">
+                  {g.label} <span className="font-normal text-slate-500">({inGroup.length})</span>
+                </h2>
+                <ol className="space-y-4">
+                  {inGroup.map((r) => <ActionItem key={r.id} rec={r} onChange={update} />)}
+                </ol>
+              </section>
+            );
+          })}
+        </div>
       )}
     </div>
   );

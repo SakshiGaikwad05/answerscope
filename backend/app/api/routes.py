@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.crawler import url_safety
 from app.db import get_db
 from app.fixes.generator import FixGenerationError, generate_fix, supports_fix
+from app.recommendations.engine import group_for
 from app.limits import consume_quota, limit_writes, usage_summary
 from app.models import (
     Competitor,
@@ -23,7 +24,7 @@ from app.models import (
     VisibilityRun,
     WebsiteAudit,
 )
-from app.providers.registry import all_providers, first_configured, get_provider
+from app.providers.registry import all_providers, analysis_provider, get_provider
 from app.questions.generator import CATEGORY_LABELS, QuestionContext, generate_questions
 from app.schemas import (
     AnswerOut,
@@ -37,11 +38,13 @@ from app.schemas import (
     QuestionsGeneratedOut,
     RecommendationOut,
     RecommendationUpdate,
+    MultiRunCreate,
     RunCreate,
     RunDetailOut,
     RunSummaryOut,
 )
 from app.services import jobs
+from app.services.overview import build_overview
 from app.services.recommendations import (
     annotate_answer,
     brand_spec_for,
@@ -50,11 +53,14 @@ from app.services.recommendations import (
     refresh_recommendations,
     run_metrics,
 )
+from app.services.user_keys import user_settings, uses_own_key
 from app.visibility.compare import compare_runs
 from app.visibility.detection import domain_of
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+LOCAL_FIELDS = ("city", "region", "country", "service_area", "address", "phone", "opening_hours", "services", "profile_urls")
 
 # Indirection so tests can stub DNS resolution.
 resolve_target = url_safety.resolve_public_target
@@ -82,8 +88,8 @@ def health() -> dict:
 
 
 @router.get("/providers")
-def providers(user: User = Depends(current_user)) -> list[dict]:
-    return [p.status() for p in all_providers()]
+def providers(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    return [p.status() for p in all_providers(user_settings(db, user.id))]
 
 
 @router.get("/meta/question-categories")
@@ -125,6 +131,7 @@ def create_project(payload: ProjectCreate, user: User = Depends(current_user), d
         website_url=target.url,
         domain=url_safety.site_key(target.host),
         industry=payload.industry,
+        **{f: getattr(payload, f) for f in LOCAL_FIELDS},
     )
     _set_competitors(project, payload.competitors)
     db.add(project)
@@ -171,8 +178,15 @@ def update_project(
     project_id: int, payload: ProjectUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)
 ) -> Project:
     project = _project_or_404(db, project_id, user)
-    project.industry = payload.industry
-    _set_competitors(project, payload.competitors)
+    # Partial update: fields the client didn't send are left unchanged.
+    sent = payload.model_fields_set
+    if "industry" in sent:
+        project.industry = payload.industry
+    for field in LOCAL_FIELDS:
+        if field in sent:
+            setattr(project, field, getattr(payload, field))
+    if "competitors" in sent:
+        _set_competitors(project, payload.competitors)
     db.commit()
     db.refresh(project)
     return project
@@ -234,10 +248,10 @@ def _site_summary(db: Session, project: Project) -> str | None:
 def generate(project_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
     project = _project_or_404(db, project_id, user)
     limit_writes(f"user:{user.id}")
-    provider = first_configured()
+    provider = analysis_provider(user_settings(db, user.id))
     if provider is not None:
         # Only AI generation costs money; the template fallback is free.
-        consume_quota(db, user, "question_generation")
+        consume_quota(db, user, "question_generation", own_key=uses_own_key(db, user.id, provider.name))
         db.commit()
     ctx = QuestionContext(
         brand=project.brand_name,
@@ -245,6 +259,9 @@ def generate(project_id: int, user: User = Depends(current_user), db: Session = 
         competitors=[c.name for c in project.competitors],
         website_url=project.website_url,
         site_summary=_site_summary(db, project),
+        city=project.city,
+        service_area=project.service_area,
+        services=list(project.services or []),
     )
     generated, note = generate_questions(ctx, provider)
     db.execute(update(Question).where(Question.project_id == project.id).values(is_active=False))
@@ -274,7 +291,7 @@ def _queue_run(
 ) -> VisibilityRun:
     """Shared by new runs and retests: same checks, quota and queueing."""
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(provider_name, user_settings(db, user.id))
     except KeyError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown provider '{provider_name}'") from None
     if not provider.is_configured():
@@ -285,11 +302,15 @@ def _queue_run(
     if not questions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Generate questions before running a visibility test")
     active = db.scalar(
-        select(VisibilityRun.id).where(VisibilityRun.project_id == project.id, VisibilityRun.status.in_(("pending", "running")))
+        select(VisibilityRun.id).where(
+            VisibilityRun.project_id == project.id,
+            VisibilityRun.provider == provider.name,
+            VisibilityRun.status.in_(("pending", "running")),
+        )
     )
     if active:
-        raise HTTPException(status.HTTP_409_CONFLICT, "A visibility test is already running for this project")
-    consume_quota(db, user, "visibility_run")
+        raise HTTPException(status.HTTP_409_CONFLICT, f"A {provider.assistant or provider.name} test is already running for this project")
+    consume_quota(db, user, "visibility_run", own_key=uses_own_key(db, user.id, provider.name))
     run = VisibilityRun(
         project_id=project.id,
         provider=provider.name,
@@ -319,6 +340,36 @@ def start_run(
         select(Question).where(Question.project_id == project.id, Question.is_active.is_(True)).order_by(Question.id)
     ).all()[: get_settings().visibility_max_questions]
     return _queue_run(db, background, user, project, payload.provider, list(questions))
+
+
+@router.post("/projects/{project_id}/runs/multi", response_model=list[RunSummaryOut], status_code=status.HTTP_202_ACCEPTED)
+def start_multi_run(
+    project_id: int,
+    payload: MultiRunCreate,
+    background: BackgroundTasks,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[VisibilityRun]:
+    """Ask the same questions to several assistants: one run per assistant, so each has its own history."""
+    project = _project_or_404(db, project_id, user)
+    limit_writes(f"user:{user.id}")
+    names = payload.providers or [p.name for p in all_providers(user_settings(db, user.id)) if p.is_configured()]
+    if not names:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            {"code": "provider_not_configured", "message": "No AI assistant API key is configured.",
+             "setup": "Add OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY or PERPLEXITY_API_KEY to backend/.env."},
+        )
+    remaining = usage_summary(db, user)["visibility_run"]["remaining"]
+    if remaining < len(names):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            {"code": "quota_exceeded", "message": f"This needs {len(names)} visibility tests but only {remaining} are left today."},
+        )
+    questions = db.scalars(
+        select(Question).where(Question.project_id == project.id, Question.is_active.is_(True)).order_by(Question.id)
+    ).all()[: get_settings().visibility_max_questions]
+    return [_queue_run(db, background, user, project, name, list(questions)) for name in dict.fromkeys(names)]
 
 
 @router.post("/runs/{run_id}/retest", response_model=RunSummaryOut, status_code=status.HTTP_202_ACCEPTED)
@@ -351,7 +402,8 @@ def get_run(run_id: int, user: User = Depends(current_user), db: Session = Depen
     data["metrics"] = run_metrics(run)
     brand = brand_spec_for(run)
     data["answers"] = [
-        {**AnswerOut.model_validate(a).model_dump(), **annotate_answer(a, brand)} for a in run.answers
+        {**AnswerOut.model_validate(a).model_dump(), **annotate_answer(a, brand, (run.conditions or {}).get("location"))}
+        for a in run.answers
     ]
     return data
 
@@ -393,7 +445,7 @@ def dashboard(project_id: int, user: User = Depends(current_user), db: Session =
     )
     return {
         "project": ProjectOut.model_validate(project).model_dump(mode="json"),
-        "providers": [p.status() for p in all_providers()],
+        "providers": [p.status() for p in all_providers(user_settings(db, user.id))],
         "usage": usage_summary(db, user),
         "latest_audit": AuditSummaryOut.model_validate(audit).model_dump(mode="json") if audit else None,
         "latest_audit_checks": audit.checks if audit else [],
@@ -408,12 +460,14 @@ def dashboard(project_id: int, user: User = Depends(current_user), db: Session =
         },
         "active_question_count": question_count,
         "competitor_domains": {c.name: domain_of(c.website_url) for c in project.competitors},
+        "overview": build_overview(db, project),
     }
 
 
 def _rec_out(rec: Recommendation) -> dict:
     data = RecommendationOut.model_validate(rec).model_dump()
     data["fix_available"] = supports_fix(rec.key)
+    data["group"] = group_for(rec.key)
     return data
 
 

@@ -38,7 +38,7 @@ def _answers_by_question(run: VisibilityRun) -> dict[str, ProviderAnswer]:
 
 
 def _state(answer: ProviderAnswer, brand) -> dict:
-    extra = annotate_answer(answer, brand)
+    extra = annotate_answer(answer, brand, (answer.run.conditions or {}).get("location"))
     return {
         "brand_mentioned": answer.brand_mentioned and not extra["brand_unknown"],
         "website_cited": answer.website_cited,

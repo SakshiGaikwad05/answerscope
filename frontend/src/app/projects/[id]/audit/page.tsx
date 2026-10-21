@@ -108,6 +108,49 @@ function AuditView() {
   );
 }
 
+function LocalSeoCard({ local }: { local: NonNullable<AuditDetail["site_info"]["local"]> }) {
+  const icon = { pass: "✓", fail: "✕", unknown: "?" } as const;
+  const tone = { pass: "text-emerald-700", fail: "text-rose-700", unknown: "text-slate-400" } as const;
+  return (
+    <Card
+      title="Local SEO"
+      description={
+        local.score == null
+          ? "Not enough information to score yet. Add your business details in Settings."
+          : `${local.score}% complete: share of the ${local.measured} measurable local checks that pass${local.unknown ? ` (${local.unknown} need more info and aren't counted)` : ""}.`
+      }
+    >
+      {local.inconsistencies.length > 0 && (
+        <div role="status" className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+          <p className="font-semibold">Inconsistent business details</p>
+          <ul className="mt-1 list-disc pl-5">{local.inconsistencies.map((i) => <li key={i}>{i}</li>)}</ul>
+        </div>
+      )}
+      <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+        {local.checks.map((c) => (
+          <li key={c.id} className="p-3">
+            <details>
+              <summary className="flex cursor-pointer list-none items-start gap-3">
+                <span className={`mt-0.5 w-4 text-center font-bold ${tone[c.status]}`} aria-label={c.status}>{icon[c.status]}</span>
+                <span className="flex-1">
+                  <span className="font-medium text-slate-900">{c.label}</span>
+                  <span className="block text-sm text-slate-600">{c.detail}</span>
+                </span>
+                {c.status === "unknown" && <Badge tone="neutral">needs info</Badge>}
+              </summary>
+              <div className="ml-7 mt-2 space-y-1 text-sm text-slate-600">
+                {c.why && <p><span className="font-medium text-slate-700">Why it matters: </span>{c.why}</p>}
+                {c.fix_hint && c.status === "fail" && <p><span className="font-medium text-slate-700">Fix: </span>{c.fix_hint}</p>}
+                {c.evidence.length > 0 && <ul className="list-disc pl-5">{c.evidence.map((e, i) => <li key={i} className="break-all">{e}</li>)}</ul>}
+              </div>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 function AuditDetailView({ audit }: { audit: AuditDetail }) {
   const grouped = audit.checks.reduce<Record<string, typeof audit.checks>>((acc, c) => {
     (acc[c.category] ||= []).push(c);
@@ -157,11 +200,16 @@ function AuditDetailView({ audit }: { audit: AuditDetail }) {
           <p className="font-semibold"><span aria-hidden="true">⚠ </span>This site&apos;s content only appears after JavaScript runs</p>
           <p className="mt-1">
             The homepage HTML is an empty app shell, so crawlers that don&apos;t run JavaScript (including most AI crawlers) see no text,
-            headings or links. The content checks below describe what those crawlers see, not what visitors see in a browser. Fix this first,
-            then re-run the audit.
+            headings or links.{" "}
+            {audit.site_info.homepage_rendered
+              ? "We rendered your pages in a headless browser to read their content, so the checks below reflect what visitors see, but AI crawlers still receive the empty shell. "
+              : "The content checks below describe what those crawlers see, not what visitors see in a browser. "}
+            Fix this first, then re-run the audit.
           </p>
         </div>
       )}
+
+      {audit.site_info.local && <LocalSeoCard local={audit.site_info.local} />}
 
       <Card title="Audit checks" description="Each check lists what was measured and the pages or values behind it.">
         <div className="space-y-6">
@@ -186,7 +234,7 @@ function AuditDetailView({ audit }: { audit: AuditDetail }) {
                           <div>
                             <p className="font-medium text-slate-700">Evidence</p>
                             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-slate-600">
-                              {c.evidence.map((e) => <li key={e} className="break-all">{e}</li>)}
+                              {c.evidence.map((e, i) => <li key={i} className="break-all">{e}</li>)}
                             </ul>
                           </div>
                         )}

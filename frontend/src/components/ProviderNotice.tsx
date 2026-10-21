@@ -1,20 +1,19 @@
+import Link from "next/link";
+
 import type { ProviderStatus, RunConditions } from "@/lib/api";
 
 export function ProviderNotConfigured({ providers }: { providers: ProviderStatus[] }) {
   if (providers.some((p) => p.configured)) return null;
-  const p = providers[0];
   return (
-    <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-      <p className="font-semibold">AI visibility testing is not set up</p>
-      <p className="mt-1">
-        No AI provider credentials are configured, so no AI answers can be collected — and none are simulated. The website
-        audit, question generation (from templates) and audit recommendations still work.
-      </p>
-      {p?.setup_instructions && (
-        <p className="mt-2">
-          <span className="font-medium">To enable {p.display_name}:</span> {p.setup_instructions}
+    <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-accent-soft p-4 text-sm text-indigo-950">
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">Connect an AI assistant to test your visibility</p>
+        <p className="mt-0.5 text-indigo-900/80">
+          Add your own ChatGPT, Claude, Gemini or Perplexity API key. Nothing is simulated without one. The website audit,
+          local SEO checks and action plan work without any key.
         </p>
-      )}
+      </div>
+      <Link href="/keys" className="rounded-lg bg-accent px-4 py-2 font-medium text-white hover:bg-accent-hover">Add API keys</Link>
     </div>
   );
 }

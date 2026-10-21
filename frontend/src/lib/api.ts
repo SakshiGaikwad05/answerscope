@@ -28,6 +28,28 @@ export interface Project {
   industry: string | null;
   created_at: string;
   competitors: Competitor[];
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  service_area: string | null;
+  address: string | null;
+  phone: string | null;
+  opening_hours: string | null;
+  services: string[];
+  profile_urls: string[];
+}
+
+/** Local business details the owner can edit. */
+export interface LocalProfileInput {
+  city?: string | null;
+  region?: string | null;
+  country?: string | null;
+  service_area?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  opening_hours?: string | null;
+  services?: string[];
+  profile_urls?: string[];
 }
 
 export interface ProjectListItem extends Project {
@@ -40,6 +62,8 @@ export interface ProjectListItem extends Project {
 export interface ProviderStatus {
   name: string;
   display_name: string;
+  assistant: string;
+  experience: string;
   configured: boolean;
   model: string;
   setup_instructions: string | null;
@@ -121,6 +145,15 @@ export interface AuditDetail extends AuditSummary {
     skipped_by_robots?: string[];
     schema_types?: string[];
     stopped_early?: string | null;
+    homepage_rendered?: boolean;
+    link_check?: { checked: number; broken: { url: string; status: string; found_on: string | null }[] };
+    local?: {
+      score: number | null;
+      measured: number;
+      unknown: number;
+      inconsistencies: string[];
+      checks: { id: string; label: string; status: "pass" | "fail" | "unknown"; detail: string; why: string; evidence: string[]; fix_hint: string | null }[];
+    };
     js_rendered_shell?: boolean;
     js_rendered_pages?: string[];
     error?: { code: string; message: string; url: string | null; status_code: number | null };
@@ -177,6 +210,14 @@ export interface EntityStats {
 }
 
 export interface RunMetrics {
+  answers_with_list: number;
+  listed_in: number;
+  average_position: number | null;
+  top3_count: number;
+  location_checked: number;
+  location_relevance_rate: number | null;
+  answers_analyzed: number;
+  other_businesses: { name: string; answers: number }[];
   unbranded_questions: number;
   unbranded_mentions: number;
   unbranded_mention_rate: number | null;
@@ -245,6 +286,10 @@ export interface Answer {
   branded_question: boolean;
   brand_unknown: boolean;
   brand_unknown_evidence: string | null;
+  position: number | null;
+  listed: number | null;
+  location_mentioned: boolean | null;
+  recommended_businesses: { name: string; position: number }[] | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -280,6 +325,94 @@ export interface Recommendation {
   status_updated_at: string | null;
   created_at: string;
   fix_available: boolean;
+  group: RecGroup;
+}
+
+export type RecGroup = "technical" | "local" | "content" | "backlinks" | "ai_visibility";
+export const REC_GROUPS: { id: RecGroup; label: string }[] = [
+  { id: "technical", label: "Critical technical problems" },
+  { id: "local", label: "Local SEO improvements" },
+  { id: "content", label: "Content improvements" },
+  { id: "backlinks", label: "Backlink and brand mention opportunities" },
+  { id: "ai_visibility", label: "AI visibility improvements" },
+];
+
+export interface AssistantOverview {
+  provider: string;
+  assistant: string;
+  configured: boolean;
+  experience: string;
+  setup: string | null;
+  latest_status: JobStatus | null;
+  latest_error: string | null;
+  run_id: number | null;
+  tested_at: string | null;
+  model: string | null;
+  metrics: {
+    questions_tested: number;
+    questions_failed: number;
+    unbranded_mention_rate: number | null;
+    brand_mention_rate: number | null;
+    website_citation_rate: number | null;
+    average_position: number | null;
+    listed_in: number;
+    answers_with_list: number;
+    location_relevance_rate: number | null;
+    branded_unknown: number;
+    branded_questions: number;
+  } | null;
+}
+
+export interface BacklinkSummary {
+  discovered: boolean;
+  backend?: string | null;
+  existing?: number;
+  opportunities?: number;
+  suggested?: number;
+  verified?: number;
+}
+
+export interface Overview {
+  ai_visibility: {
+    score: number | null;
+    kind: "observed";
+    formula: string;
+    included: { assistant: string; unprompted_mention_rate: number }[];
+    excluded: string[];
+  };
+  assistants: AssistantOverview[];
+  website_health: { score: number | null; audit_id: number | null };
+  local_seo: { score: number | null; measured: number; unknown: number; failing: string[]; inconsistencies: string[]; note: string | null };
+  backlinks: BacklinkSummary;
+  competitors: { name: string; average_mention_rate: number; assistants: number }[];
+  other_businesses: { name: string; answers: number }[];
+  top_actions: { id: number; issue: string; priority: Level; effort: Level; group: RecGroup; blocking: boolean }[];
+}
+
+export type BacklinkStatus = "found" | "suggested" | "in_progress" | "completed" | "verified" | "not_found" | "dismissed";
+
+export interface BacklinkItem {
+  id: number;
+  kind: "existing" | "opportunity";
+  status: BacklinkStatus;
+  url: string;
+  domain: string;
+  title: string | null;
+  category: string;
+  submission_url: string | null;
+  relevance: string | null;
+  why_it_helps: string | null;
+  value_type: "backlink" | "mention" | "both" | "unknown";
+  link_rel: "follow" | "nofollow" | "ugc" | "sponsored" | "unknown";
+  discovered_via: string | null;
+  evidence: string[];
+  outreach: string | null;
+  note: string | null;
+  last_checked_at: string | null;
+  check_error: string | null;
+  verified_at: string | null;
+  status_updated_at: string | null;
+  created_at: string;
 }
 
 export interface Dashboard {
@@ -295,6 +428,7 @@ export interface Dashboard {
   action_plan: Record<RecStatus | "no_longer_detected", number>;
   usage: Usage;
   active_question_count: number;
+  overview: Overview;
 }
 
 export interface User {
@@ -307,7 +441,7 @@ export interface UsageItem {
   limit: number;
   remaining: number;
 }
-export type Usage = Record<"visibility_run" | "question_generation" | "fix_generation", UsageItem>;
+export type Usage = Record<"visibility_run" | "question_generation" | "fix_generation" | "backlink_discovery", UsageItem>;
 
 export interface FixDraft {
   id: number;
@@ -367,6 +501,28 @@ export class ApiError extends Error {
     this.setup = extra?.setup;
     this.code = extra?.code;
   }
+}
+
+export type KeyProvider = "openai" | "anthropic" | "gemini" | "perplexity" | "nvidia" | "brave";
+
+export interface UserKey {
+  provider: KeyProvider;
+  label: string;
+  purpose: string;
+  get_key_url: string;
+  saved: boolean;
+  needs_reentry: boolean;
+  last4: string | null;
+  /** true = accepted by the provider, null = couldn't be checked for free (checked on first use) */
+  verified: boolean | null;
+  updated_at: string | null;
+  server_key_available: boolean;
+}
+
+export interface KeysStatus {
+  enabled: boolean;
+  server_keys_used: boolean;
+  keys: UserKey[];
 }
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<T> {
@@ -440,8 +596,8 @@ export const api = {
     brand_name: string;
     industry?: string;
     competitors: { name: string; website_url?: string }[];
-  }) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(body) }),
-  updateProject: (id: number, body: { industry?: string | null; competitors: { name: string; website_url?: string | null }[] }) =>
+  } & LocalProfileInput) => request<Project>("/api/projects", { method: "POST", body: JSON.stringify(body) }),
+  updateProject: (id: number, body: { industry?: string | null; competitors?: { name: string; website_url?: string | null }[] } & LocalProfileInput) =>
     request<Project>(`/api/projects/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteProject: (id: number) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
   dashboard: (id: number) => request<Dashboard>(`/api/projects/${id}/dashboard`),
@@ -461,6 +617,22 @@ export const api = {
   compareRuns: (projectId: number, base: number, target: number) =>
     request<RunComparison>(`/api/projects/${projectId}/compare?base=${base}&target=${target}`),
   recommendations: (id: number) => request<Recommendation[]>(`/api/projects/${id}/recommendations`),
+  startMultiRun: (id: number, providers: string[] = []) =>
+    request<RunSummary[]>(`/api/projects/${id}/runs/multi`, { method: "POST", body: JSON.stringify({ providers }) }),
+  backlinks: (id: number) =>
+    request<{ search_configured: boolean; search_backend: string | null; setup: string | null; items: BacklinkItem[] }>(`/api/projects/${id}/backlinks`),
+  discoverBacklinks: (id: number) =>
+    request<BacklinkItem[]>(`/api/projects/${id}/backlinks/discover`, { method: "POST" }, 150_000),
+  addBacklink: (id: number, url: string) =>
+    request<BacklinkItem>(`/api/projects/${id}/backlinks`, { method: "POST", body: JSON.stringify({ url }) }),
+  updateBacklink: (itemId: number, body: { status?: "suggested" | "in_progress" | "completed" | "dismissed"; note?: string | null }) =>
+    request<BacklinkItem>(`/api/backlinks/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  verifyBacklink: (itemId: number) => request<BacklinkItem>(`/api/backlinks/${itemId}/verify`, { method: "POST" }, 60_000),
+  deleteBacklink: (itemId: number) => request<void>(`/api/backlinks/${itemId}`, { method: "DELETE" }),
+  keys: () => request<KeysStatus>("/api/keys"),
+  saveKey: (provider: KeyProvider, apiKey: string) =>
+    request<KeysStatus>(`/api/keys/${provider}`, { method: "PUT", body: JSON.stringify({ api_key: apiKey }) }, 30_000),
+  deleteKey: (provider: KeyProvider) => request<void>(`/api/keys/${provider}`, { method: "DELETE" }),
   updateRecommendation: (recId: number, body: { status?: RecStatus; note?: string | null }) =>
     request<Recommendation>(`/api/recommendations/${recId}`, { method: "PATCH", body: JSON.stringify(body) }),
 };

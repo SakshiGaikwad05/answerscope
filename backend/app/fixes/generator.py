@@ -26,12 +26,16 @@ from sqlalchemy.orm import Session
 from app.limits import consume_quota
 from app.models import AuditPage, FixDraft, Recommendation, User, WebsiteAudit
 from app.providers.base import ProviderError
-from app.providers.registry import first_configured
+from app.providers.registry import analysis_provider
 from app.services.recommendations import latest_completed_audit
+from app.services.user_keys import user_settings, uses_own_key
 
-TEMPLATE_KEYS = {"crawl:sitemap", "crawl:robots-txt", "crawl:ai-crawlers-blocked", "schema:organization"}
+TEMPLATE_KEYS = {"crawl:sitemap", "crawl:robots-txt", "crawl:ai-crawlers-blocked", "schema:organization", "local:schema"}
 AI_KEY_PREFIXES = (
     "meta:titles",
+    "meta:title-quality",
+    "local:services",
+    "local:city",
     "meta:descriptions",
     "meta:brand-homepage",
     "content:faq",
@@ -67,6 +71,8 @@ class SiteContext:
     competitors: list[str]
     pages: list[AuditPage]
     site_text: str  # everything the model may rely on, for the number check
+    profile: dict = None  # owner-provided local details
+    local_found: dict = None  # local facts the audit found on the site
 
 
 def _site_context(db: Session, rec: Recommendation) -> SiteContext:
@@ -85,6 +91,9 @@ def _site_context(db: Session, rec: Recommendation) -> SiteContext:
         competitors=[c.name for c in project.competitors],
         pages=pages,
         site_text=text,
+        profile={k: getattr(project, k) for k in ("city", "region", "country", "service_area", "address", "phone",
+                                                  "opening_hours", "services", "profile_urls")},
+        local_found=((audit.site_info or {}).get("local") or {}).get("found") if audit else {},
     )
 
 
@@ -142,6 +151,94 @@ def _organization(ctx: SiteContext) -> FixDraft:
     )
 
 
+# Category keywords -> the most specific fitting Schema.org type (LocalBusiness otherwise)
+SCHEMA_TYPES = [
+    (("dentist", "dental"), "Dentist"), (("clinic", "doctor", "physician", "hospital"), "MedicalClinic"),
+    (("restaurant", "dhaba", "eatery"), "Restaurant"), (("cafe", "coffee"), "CafeOrCoffeeShop"), (("bakery",), "Bakery"),
+    (("salon", "beauty", "spa"), "BeautySalon"), (("gym", "fitness"), "ExerciseGym"), (("hotel", "lodge", "resort"), "Hotel"),
+    (("lawyer", "advocate", "legal"), "LegalService"), (("accountant", "ca firm", "tax"), "AccountingService"),
+    (("car repair", "garage", "auto repair", "mechanic"), "AutoRepair"), (("electronics", "mobile repair", "laptop repair"), "ElectronicsStore"),
+    (("hardware",), "HardwareStore"), (("grocery", "kirana", "supermarket"), "GroceryStore"), (("clothing", "boutique", "apparel"), "ClothingStore"),
+    (("agri", "agricultural", "seed", "fertilizer", "garden", "nursery"), "Store"), (("photographer", "photography"), "ProfessionalService"),
+    (("school", "coaching", "tuition", "academy"), "EducationalOrganization"), (("real estate", "realtor", "property"), "RealEstateAgent"),
+    (("store", "shop", "mart"), "Store"),
+]
+_HOURS_FORMAT = re.compile(r"^(?:(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:-(?:Mo|Tu|We|Th|Fr|Sa|Su))?(?:,(?:Mo|Tu|We|Th|Fr|Sa|Su))*\s\d{2}:\d{2}-\d{2}:\d{2}(?:,\s*|\s*;\s*|$))+$")
+
+
+def schema_type_for(category: str | None) -> str:
+    c = (category or "").lower()
+    for words, schema_type in SCHEMA_TYPES:
+        if any(w in c for w in words):
+            return schema_type
+    return "LocalBusiness"
+
+
+def _local_business(ctx: SiteContext) -> FixDraft:
+    """LocalBusiness JSON-LD using only verified facts: the owner's profile, or details found on the site."""
+    prof, found = ctx.profile or {}, ctx.local_found or {}
+    sources, placeholders = {}, []
+    data = {"@context": "https://schema.org", "@type": schema_type_for(ctx.industry), "name": ctx.brand, "url": ctx.website_url}
+    sources["name"] = sources["url"] = "your project"
+    if ctx.industry:
+        data["description"] = None  # filled below from the site, never invented
+    home = next((p for p in ctx.pages if p.meta_description), None)
+    if home:
+        data["description"] = home.meta_description
+        sources["description"] = "your homepage meta description"
+    else:
+        data.pop("description", None)
+
+    if prof.get("phone"):
+        data["telephone"], sources["telephone"] = prof["phone"], "your profile"
+    elif found.get("tel_links"):
+        data["telephone"], sources["telephone"] = found["tel_links"][0], "your website (tel: link)"
+    else:
+        data["telephone"] = "[ADD: phone number]"
+        placeholders.append("Phone number")
+
+    if prof.get("address") or prof.get("city"):
+        address = {"@type": "PostalAddress"}
+        if prof.get("address"):
+            address["streetAddress"] = prof["address"]
+        else:
+            address["streetAddress"] = "[ADD: street address]"
+            placeholders.append("Street address")
+        for key, field in (("addressLocality", "city"), ("addressRegion", "region"), ("addressCountry", "country")):
+            if prof.get(field):
+                address[key] = prof[field]
+        data["address"], sources["address"] = address, "your profile"
+    else:
+        data["address"] = {"@type": "PostalAddress", "streetAddress": "[ADD: street address]", "addressLocality": "[ADD: town/city]"}
+        placeholders += ["Street address", "Town/city"]
+
+    hours = (prof.get("opening_hours") or "").strip()
+    if hours and _HOURS_FORMAT.match(hours):
+        data["openingHours"], sources["openingHours"] = hours, "your profile"
+    else:
+        data["openingHours"] = "[ADD: hours in Schema.org format, e.g. Mo-Sa 09:00-19:00]" + (f" (your profile says: {hours})" if hours else "")
+        placeholders.append("Opening hours")
+    if prof.get("service_area"):
+        data["areaServed"], sources["areaServed"] = prof["service_area"], "your profile"
+    same_as = list(dict.fromkeys((prof.get("profile_urls") or []) + (found.get("profiles") or [])))
+    if same_as:
+        data["sameAs"], sources["sameAs"] = same_as, "your profile / links on your website"
+    else:
+        data["sameAs"] = ["[ADD: Google Business Profile URL and other official profiles]"]
+        placeholders.append("Official profile URLs")
+
+    content = '<script type="application/ld+json">\n' + json.dumps(data, indent=2, ensure_ascii=False) + "\n</script>\n"
+    notes = (
+        f"Paste inside <head> on your homepage, fill in any placeholders, and test it with a schema validator. "
+        f"Type '{data['@type']}' was chosen from your category"
+        + (f" ('{ctx.industry}')" if ctx.industry else " (none set, so the generic LocalBusiness type)")
+        + ". Where each value came from: " + "; ".join(f"{k}: {v}" for k, v in sources.items())
+        + ". Nothing else was added: every value must match your Google Business Profile exactly."
+    )
+    return FixDraft(title=f"{data['@type']} structured data (JSON-LD)", format="json-ld", content=content,
+                    placeholders=placeholders, notes=notes, sources=[ctx.website_url], generator="template")
+
+
 # --------------------------------------------------------------------------- AI drafts
 DRAFT_SCHEMA = {
     "type": "object",
@@ -175,7 +272,7 @@ def _page_block(p: AuditPage) -> str:
 
 def _task(rec: Recommendation, ctx: SiteContext) -> str:
     key = rec.key
-    if key.startswith(("meta:titles", "meta:descriptions", "meta:brand-homepage")):
+    if key.startswith(("meta:titles", "meta:title-quality", "meta:descriptions", "meta:brand-homepage")):
         return (
             "For each page above, write an improved <title> (50-60 characters, include the brand name) and meta description "
             "(140-160 characters) that accurately summarize that page's actual content. Output markdown: one section per URL "
@@ -196,6 +293,21 @@ def _task(rec: Recommendation, ctx: SiteContext) -> str:
             f"(features, pricing, who it's for, support), 'Choose {ctx.brand} if…' / 'Choose {rival_name} if…' sections, and an "
             f"FAQ. You have NO verified information about {rival_name}: every competitor cell must be a placeholder like "
             f"[ADD: {rival_name} pricing, from their official site]. Output markdown."
+        )
+    if key == "local:services":
+        services = ", ".join((ctx.profile or {}).get("services") or []) or "the business's main services"
+        city = (ctx.profile or {}).get("city") or "[ADD: town/city]"
+        return (
+            f"Draft one short service page section for each of these services: {services}. Each section: an H2 naming the "
+            f"service and {city}, 2-3 sentences on what it includes and who it's for using only the website content, and a "
+            "contact line. Use [ADD: ...] for details the site doesn't state (prices, brands, guarantees). Output markdown."
+        )
+    if key == "local:city":
+        city = (ctx.profile or {}).get("city") or "[ADD: town/city]"
+        area = (ctx.profile or {}).get("service_area")
+        return (
+            f"Rewrite the homepage <title>, meta description, H1 and a 2-sentence intro so they clearly state what {ctx.brand} "
+            f"offers and that it serves {city}" + (f" and {area}" if area else "") + ". Use only facts from the website content. Output markdown."
         )
     if key == "content:pricing":
         return (
@@ -225,9 +337,9 @@ def _flag_unsupported_numbers(content: str, site_text: str) -> list[str]:
 
 
 def _ai_draft(db: Session, rec: Recommendation, ctx: SiteContext, user: User) -> FixDraft:
-    provider = first_configured()
+    provider = analysis_provider(user_settings(db, user.id))
     if provider is None:
-        raise FixGenerationError(400, "provider_not_configured", "AI drafts need an AI provider API key on the server.")
+        raise FixGenerationError(400, "provider_not_configured", "AI drafts need an Anthropic or NVIDIA API key. Add yours on the API keys page.")
     usable = [p for p in ctx.pages if p.word_count >= MIN_CONTENT_WORDS or p.headings]
     if not usable:
         raise FixGenerationError(
@@ -235,7 +347,7 @@ def _ai_draft(db: Session, rec: Recommendation, ctx: SiteContext, user: User) ->
             "The audit found no readable content on your pages, so there are no facts to base a draft on. "
             "Fix the site's content visibility (or enable JavaScript rendering) and re-run the audit first.",
         )
-    consume_quota(db, user, "fix_generation")
+    consume_quota(db, user, "fix_generation", own_key=uses_own_key(db, user.id, provider.name))
     db.flush()
     pages = usable[:MAX_PAGES_IN_CONTEXT]
     prompt = "\n\n".join(
@@ -277,6 +389,8 @@ def generate_fix(db: Session, rec: Recommendation, *, user: User) -> FixDraft:
         draft = _robots(ctx)
     elif rec.key == "schema:organization":
         draft = _organization(ctx)
+    elif rec.key == "local:schema":
+        draft = _local_business(ctx)
     elif supports_fix(rec.key):
         draft = _ai_draft(db, rec, ctx, user)
     else:

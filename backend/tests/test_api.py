@@ -110,10 +110,12 @@ def test_create_project_normalizes_and_dedupes(client):
 
 
 def test_providers_report_not_configured(client):
-    status = client.get("/api/providers").json()
-    assert status[0]["name"] == "anthropic"
-    assert status[0]["configured"] is False
-    assert "ANTHROPIC_API_KEY" in status[0]["setup_instructions"]
+    status = {p["name"]: p for p in client.get("/api/providers").json()}
+    assert list(status) == ["openai", "anthropic", "gemini", "perplexity"]
+    assert [p["assistant"] for p in status.values()] == ["ChatGPT", "Claude", "Gemini", "Perplexity"]
+    for name, env in [("openai", "OPENAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"), ("gemini", "GEMINI_API_KEY"), ("perplexity", "PERPLEXITY_API_KEY")]:
+        assert status[name]["configured"] is False and env in status[name]["setup_instructions"]
+        assert "not identical" in status[name]["experience"]  # API results are labelled as such
 
 
 def test_full_workflow(client):
@@ -335,3 +337,19 @@ def test_recommendation_update_validation(client):
     assert client.patch(f"/api/recommendations/{rec['id']}", json={"status": "bogus"}).status_code == 422
     r = client.patch(f"/api/recommendations/{rec['id']}", json={"note": "   "})
     assert r.status_code == 200 and r.json()["note"] is None and r.json()["status"] == "open"
+
+
+def test_local_profile_create_validate_and_partial_update(client):
+    r = create(client, city="Akola", region="Maharashtra", country="in", phone="+91 98765 43210",
+               services=["Seeds", "seeds", "Fertilizers"], profile_urls=["https://g.page/r/abc", "https://g.page/r/abc"])
+    assert r.status_code == 201, r.text
+    p = r.json()
+    assert (p["city"], p["country"], p["services"], p["profile_urls"]) == ("Akola", "IN", ["Seeds", "Fertilizers"], ["https://g.page/r/abc"])
+    assert create(client, country="India").status_code == 422
+    assert create(client, phone="call me").status_code == 422
+    assert create(client, profile_urls=["javascript:alert(1)"]).status_code == 422
+    # Updating only competitors must not wipe the local profile
+    r = client.put(f"/api/projects/{p['id']}", json={"competitors": ["Globex"]})
+    assert r.json()["city"] == "Akola" and r.json()["phone"] == "+91 98765 43210"
+    r = client.put(f"/api/projects/{p['id']}", json={"city": "Amravati", "phone": None})
+    assert r.json()["city"] == "Amravati" and r.json()["phone"] is None and [c["name"] for c in r.json()["competitors"]] == ["Globex"]

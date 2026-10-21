@@ -1,3 +1,4 @@
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.auth_routes import router as auth_router
+from app.api.backlink_routes import router as backlink_router
+from app.api.key_routes import router as key_router
 from app.api.routes import router
 from app.config import get_settings
 from app.db import session_scope
@@ -19,7 +22,7 @@ def configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     # The SDK/httpx debug logs can include request headers; keep them quiet.
-    for noisy in ("httpx", "httpx2", "httpcore", "anthropic"):
+    for noisy in ("httpx", "httpx2", "httpcore", "anthropic", "openai", "google_genai", "google.genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
@@ -46,6 +49,17 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def require_proxy_secret(request: Request, call_next):
+    """With AEO_PROXY_SECRET set, only the frontend's proxy may call the API (health checks excepted)."""
+    secret = get_settings().proxy_secret
+    if get_settings().has_key(secret) and request.url.path.startswith("/api/") and request.url.path != "/api/health":
+        sent = request.headers.get("x-aeo-proxy-secret", "")
+        if not hmac.compare_digest(sent.encode(), secret.get_secret_value().strip().encode()):
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+    return await call_next(request)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
     errors = [
@@ -57,3 +71,5 @@ async def validation_handler(_request: Request, exc: RequestValidationError) -> 
 
 app.include_router(auth_router)
 app.include_router(router)
+app.include_router(backlink_router)
+app.include_router(key_router)

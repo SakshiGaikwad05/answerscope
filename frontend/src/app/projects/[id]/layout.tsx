@@ -13,6 +13,7 @@ const TABS = [
   { href: "/results", label: "Questions & results" },
   { href: "/competitors", label: "Competitors" },
   { href: "/recommendations", label: "Action plan" },
+  { href: "/backlinks", label: "Backlinks" },
   { href: "/compare", label: "Compare" },
   { href: "/history", label: "History" },
   { href: "/settings", label: "Settings" },

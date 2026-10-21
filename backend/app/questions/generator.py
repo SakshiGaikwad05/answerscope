@@ -52,6 +52,9 @@ class QuestionContext:
     competitors: list[str]
     website_url: str
     site_summary: str | None = None  # homepage title/description/headings, if audited
+    city: str | None = None
+    service_area: str | None = None
+    services: list[str] | None = None
 
 
 def _category_phrase(ctx: QuestionContext) -> str:
@@ -68,6 +71,34 @@ def template_questions(ctx: QuestionContext) -> list[GeneratedQuestion]:
     comps = [c.strip() for c in ctx.competitors if c.strip()]
     c1 = comps[0] if comps else None
     c2 = comps[1] if len(comps) > 1 else None
+
+    if ctx.city:
+        # Local business: the questions people actually ask an assistant name the place
+        city = ctx.city.strip()
+        service = (ctx.services or [None])[0]
+        local: list[tuple[str, str]] = [
+            ("best_in_category", f"What is the best {cat} in {city}?"),
+            ("best_in_category", f"Which {cat} near {city} do people recommend?"),
+            ("best_in_category", f"Top-rated {cat} in {city}"),
+            ("recommendation", f"Is {brand} in {city} a good choice?"),
+            ("recommendation", f"What do customers say about {brand} in {city}?"),
+            ("recommendation", f"Can you recommend a reliable {cat} in {city}?"),
+            ("alternatives", f"What are alternatives to {brand} in {city}?"),
+            ("alternatives", f"Where else can I go instead of {c1} in {city}?" if c1 else f"Which other {cat} are there in {city}?"),
+            ("comparison", f"{brand} vs {c1}: which is better?" if c1 else f"How does {brand} compare to other {cat} in {city}?"),
+            ("comparison", f"Which {cat} in {city} has the best service?"),
+            ("pricing", f"Affordable {cat} in {city}"),
+            ("pricing", f"How much does {brand} charge?"),
+            ("pricing", f"Which {cat} in {city} offers the best value for money?"),
+            ("features", f"Which local businesses in {city} offer {service}?" if service else f"What services does {brand} offer?"),
+            ("features", f"What should I look for when choosing a {cat} in {city}?"),
+            ("use_case", f"Where can I find a {cat} open on Sundays in {city}?"),
+            ("use_case", f"Which {cat} in {city} is best for {service.lower()}?" if service else f"Which {cat} in {city} is best for small orders?"),
+            ("beginner", f"I'm new to {city}. Which {cat} should I try first?"),
+            ("beginner", f"How do I contact {brand} in {city}?"),
+            ("best_in_category", f"Best {cat} near {ctx.service_area}" if ctx.service_area else f"{cat} near me in {city}"),
+        ]
+        return [GeneratedQuestion(text=t, category=c, source="template") for c, t in local][:TARGET_COUNT]
 
     q: list[tuple[str, str]] = [
         ("best_in_category", f"What are the best {cat} in 2026?" if has_industry else f"What are the best {cat}?"),
@@ -129,6 +160,12 @@ def _llm_prompt(ctx: QuestionContext) -> str:
         f"Industry / category: {ctx.industry or '(not provided - infer it from the website summary)'}",
         f"Known competitors: {competitors}",
     ]
+    if ctx.city:
+        lines.append(f"Location: {ctx.city}" + (f" (service area: {ctx.service_area})" if ctx.service_area else ""))
+        lines.append("This is a LOCAL business: most questions should name the town/city or say 'near me', the way people "
+                     "ask an assistant for a local recommendation (e.g. 'best dental clinic in Pune').")
+    if ctx.services:
+        lines.append(f"Services: {', '.join(ctx.services)}")
     if ctx.site_summary:
         lines.append(f"Website summary (from a crawl):\n{ctx.site_summary[:3000]}")
     lines.append(

@@ -32,6 +32,10 @@ class AnswerRecord:
     detections: set[tuple[str, str, str]]
     branded: bool = False  # the question itself names the brand
     brand_unknown: bool = False  # the answer says the AI couldn't find / doesn't know the brand
+    position: int | None = None  # brand's position in the answer's list (None: not listed / no list)
+    listed: int | None = None  # number of list items, None when the answer has no list
+    location_mentioned: bool | None = None  # None when no location is on file
+    recommended: list | None = None  # AI-extracted businesses recommended, in order (optional)
 
     @property
     def mentions_brand(self) -> bool:
@@ -92,7 +96,29 @@ def compute_run_metrics(records: list[AnswerRecord], brand: str, competitors: li
     unbranded_mentions = sum(1 for r in unbranded if r.mentions_brand)
     branded_known = sum(1 for r in branded if r.mentions_brand)
     branded_unknown = sum(1 for r in branded if r.brand_unknown)
+    with_list = [r for r in tested if r.listed]
+    positions = [r.position for r in with_list if r.position]
+    loc_known = [r for r in tested if r.location_mentioned is not None]
+    extracted = [r for r in tested if r.recommended is not None]
+    others: dict[str, int] = {}
+    tracked = {brand.lower(), *(c.lower() for c in competitors)}
+    for r in extracted:
+        for b in r.recommended:
+            name = (b.get("name") if isinstance(b, dict) else str(b) or "").strip()
+            if name and name.lower() not in tracked:
+                others[name] = others.get(name, 0) + 1
     return {
+        # Position: only answers that contain a list are measurable
+        "answers_with_list": len(with_list),
+        "listed_in": len(positions),
+        "average_position": round(sum(positions) / len(positions), 1) if positions else None,
+        "top3_count": sum(1 for p in positions if p <= 3),
+        # Location relevance: share of answers that mention the business's city / service area
+        "location_checked": len(loc_known),
+        "location_relevance_rate": pct(sum(1 for r in loc_known if r.location_mentioned), len(loc_known)),
+        # Businesses the AI recommended that you aren't tracking (from AI extraction, if enabled)
+        "answers_analyzed": len(extracted),
+        "other_businesses": sorted(({"name": k, "answers": v} for k, v in others.items()), key=lambda x: -x["answers"])[:10],
         # Headline: does the AI bring the brand up when the question doesn't name it?
         "unbranded_questions": len(unbranded),
         "unbranded_mentions": unbranded_mentions,

@@ -53,7 +53,7 @@ export default function HistoryPage() {
                   <div className="flex items-center gap-2">
                     <StatusBadge status={r.status} />
                     <Link href={`/projects/${projectId}/results?run=${r.id}`} className="font-medium text-slate-900 hover:underline">Run #{r.id}</Link>
-                    <span className="text-slate-500">{r.completed_questions}/{r.total_questions} answered</span>
+                    <span className="text-slate-500">{r.completed_questions}/{r.total_questions} processed</span>
                   </div>
                   <span className="text-xs text-slate-400">{dateTime(r.created_at)}</span>
                 </div>

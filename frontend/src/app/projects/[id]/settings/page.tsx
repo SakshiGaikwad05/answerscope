@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { CompetitorFields, cleanCompetitors, type CompetitorDraft } from "@/components/CompetitorFields";
+import { EMPTY_LOCAL, LocalProfileFields, localDraftFrom, localPayload, type LocalDraft } from "@/components/LocalProfileFields";
 import { useProject } from "@/components/ProjectContext";
 import { Button, Card } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -13,6 +14,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const project = dashboard?.project;
   const [industry, setIndustry] = useState(project?.industry ?? "");
+  const [local, setLocal] = useState<LocalDraft>(project ? localDraftFrom(project) : EMPTY_LOCAL);
   const [competitors, setCompetitors] = useState<CompetitorDraft[]>(
     project?.competitors.map((c) => ({ name: c.name, website_url: c.website_url ?? "" })) ?? [],
   );
@@ -26,7 +28,7 @@ export default function SettingsPage() {
     setSaving(true);
     setMessage(null);
     try {
-      await api.updateProject(projectId, { industry: industry.trim() || null, competitors: cleanCompetitors(competitors) });
+      await api.updateProject(projectId, { industry: industry.trim() || null, competitors: cleanCompetitors(competitors), ...localPayload(local) });
       await refresh();
       setMessage({ ok: true, text: "Saved. New settings apply to the next questions and visibility test; past runs keep their original conditions." });
     } catch (err) {
@@ -54,6 +56,7 @@ export default function SettingsPage() {
             <label htmlFor="industry" className="text-sm font-medium text-slate-800">Industry or category</label>
             <input id="industry" value={industry} maxLength={200} onChange={(e) => setIndustry(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           </div>
+          <LocalProfileFields value={local} onChange={setLocal} />
           <CompetitorFields value={competitors} onChange={setCompetitors} />
           {message && <p role={message.ok ? "status" : "alert"} className={`rounded-lg px-3 py-2 text-sm ${message.ok ? "bg-emerald-50 text-emerald-900" : "bg-rose-50 text-rose-800"}`}>{message.text}</p>}
           <div className="flex justify-end"><Button type="submit" loading={saving}>Save changes</Button></div>

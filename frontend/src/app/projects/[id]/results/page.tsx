@@ -26,6 +26,9 @@ function AnswerRow({ a }: { a: Answer }) {
             <span className="mt-0.5 block text-xs text-slate-500">
               {CATEGORY_LABELS[a.question_category] ?? a.question_category}
               {a.branded_question && <Badge className="ml-2">names you</Badge>}
+              {a.position != null && <Badge tone="accent" className="ml-2">#{a.position} of {a.listed} listed</Badge>}
+              {a.position == null && a.listed != null && <Badge className="ml-2">not in list of {a.listed}</Badge>}
+              {a.location_mentioned === true && <Badge className="ml-2">mentions your area</Badge>}
             </span>
           </span>
           {a.error ? (
@@ -54,6 +57,12 @@ function AnswerRow({ a }: { a: Answer }) {
             </div>
             <div className="space-y-4 text-sm">
               <div>
+                {a.recommended_businesses && a.recommended_businesses.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Businesses recommended, in order <Badge tone="warning">AI-extracted</Badge></p>
+                    <ol className="mt-1 list-decimal pl-5 text-slate-700">{a.recommended_businesses.map((b) => <li key={b.name}>{b.name}</li>)}</ol>
+                  </div>
+                )}
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Detection evidence</p>
                 {a.brand_unknown && (
                   <div className="mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">

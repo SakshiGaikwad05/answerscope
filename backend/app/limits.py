@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import UsageEvent, User
 
-QUOTA_KINDS = ("visibility_run", "question_generation", "fix_generation")
+QUOTA_KINDS = ("visibility_run", "question_generation", "fix_generation", "backlink_discovery")
 
 
 def _limits(kind: str) -> tuple[int, int]:
@@ -30,6 +30,7 @@ def _limits(kind: str) -> tuple[int, int]:
         "visibility_run": (s.quota_visibility_runs_per_user_per_day, s.quota_visibility_runs_global_per_day),
         "question_generation": (s.quota_question_generations_per_user_per_day, s.quota_question_generations_global_per_day),
         "fix_generation": (s.quota_fix_generations_per_user_per_day, s.quota_fix_generations_global_per_day),
+        "backlink_discovery": (s.quota_backlink_discoveries_per_user_per_day, s.quota_backlink_discoveries_global_per_day),
     }[kind]
 
 
@@ -38,6 +39,9 @@ def _count(db: Session, kind: str, user_id: int | None = None) -> int:
     q = select(func.count()).select_from(UsageEvent).where(UsageEvent.kind == kind, UsageEvent.created_at >= since)
     if user_id is not None:
         q = q.where(UsageEvent.user_id == user_id)
+    else:
+        # The global cap protects the server's own API keys; users' own keys don't count toward it
+        q = q.where(UsageEvent.own_key.is_(False))
     return db.scalar(q) or 0
 
 
@@ -50,8 +54,11 @@ def usage_summary(db: Session, user: User) -> dict:
     return out
 
 
-def consume_quota(db: Session, user: User, kind: str) -> None:
-    """Record one use of a paid action, or raise 429 if a limit is reached. Caller commits."""
+def consume_quota(db: Session, user: User, kind: str, *, own_key: bool = False) -> None:
+    """Record one use of a paid action, or raise 429 if a limit is reached. Caller commits.
+
+    own_key: the action runs on the user's own API key, so the server-wide cap doesn't apply.
+    """
     per_user, global_cap = _limits(kind)
     label = kind.replace("_", " ")
     if _count(db, kind, user.id) >= per_user:
@@ -59,12 +66,12 @@ def consume_quota(db: Session, user: User, kind: str) -> None:
             status.HTTP_429_TOO_MANY_REQUESTS,
             {"code": "quota_exceeded", "message": f"Daily limit reached: {per_user} {label}s per 24 hours. Try again later."},
         )
-    if _count(db, kind) >= global_cap:
+    if not own_key and _count(db, kind) >= global_cap:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             {"code": "global_quota_exceeded", "message": f"The service's daily {label} capacity is used up. Try again tomorrow."},
         )
-    db.add(UsageEvent(user_id=user.id, kind=kind))
+    db.add(UsageEvent(user_id=user.id, kind=kind, own_key=own_key))
 
 
 class RateLimiter:
@@ -98,7 +105,10 @@ limiter = RateLimiter()
 
 
 def client_ip(request: Request) -> str:
-    # The Next.js proxy forwards the browser's address in X-Forwarded-For.
+    # Behind a proxy secret, the frontend passes the visitor's address in x-aeo-client-ip (checked in main.py).
+    if get_settings().has_key(get_settings().proxy_secret):
+        return request.headers.get("x-aeo-client-ip", "").strip() or "unknown"
+    # Local / docker-compose: the Next.js proxy forwards the browser's address in X-Forwarded-For.
     forwarded = request.headers.get("x-forwarded-for", "")
     return forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 

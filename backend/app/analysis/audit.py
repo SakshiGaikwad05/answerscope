@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass, field
 
 from app.analysis.extract import PageData
+from app.analysis.local import evaluate_local
+from app.crawler.url_safety import is_same_site
 from app.crawler.crawler import CrawlResult
 
 TITLE_MIN, TITLE_MAX = 10, 65
@@ -91,6 +93,19 @@ class AuditOutcome:
     page_issues: dict[str, list[dict]]
     content_gaps: list[dict]
     site_info: dict = field(default_factory=dict)
+
+
+GENERIC_TITLE_WORDS = {"home", "homepage", "index", "untitled", "welcome", "react app", "vite app", "vite + react",
+                       "my website", "website", "page", "new site", "document"}
+
+
+def is_generic_title(title: str, brand: str, host: str) -> bool:
+    t = title.strip().lower()
+    if t in GENERIC_TITLE_WORDS:
+        return True
+    words = re.findall(r"[a-z0-9]+", t)
+    # Very short, or just the bare domain: says nothing about what the business does
+    return len(t) < 6 or (t == host.lower().removeprefix("www.")) or (len(words) == 1 and len(t) <= 8 and t not in brand.lower().split())
 
 
 def page_issues(page: PageData) -> list[dict]:
@@ -188,7 +203,7 @@ def topic_coverage(pages: list[PageData], brand: str) -> list[dict]:
     return gaps
 
 
-def evaluate(crawl: CrawlResult, brand: str) -> AuditOutcome:
+def evaluate(crawl: CrawlResult, brand: str, profile: dict | None = None) -> AuditOutcome:
     pages = [cp.data for cp in crawl.pages]
     home = pages[0] if pages else None
     checks: list[dict] = []
@@ -386,6 +401,37 @@ def evaluate(crawl: CrawlResult, brand: str) -> AuditOutcome:
         }
     )
 
+    # --- Technical hygiene: broken links, canonicals, generic/duplicate titles -------------------
+    broken = (crawl.link_check or {}).get("broken", [])
+    checked = (crawl.link_check or {}).get("checked", 0)
+    if checked:
+        checks.append(_bool_check(
+            "broken_links", "No broken internal links", "crawlability", 2, not broken,
+            f"{len(broken)} of {checked} checked internal link(s) are broken." if broken else f"All {checked} checked internal links work.",
+            "Broken links waste crawl budget and lead crawlers and visitors to dead ends.",
+            [f"{b['url']} ({b['status']})" + (f" linked from {b['found_on']}" if b.get("found_on") else "") for b in broken],
+        ))
+    root_host = (crawl.root_url.split("/")[2] if "://" in crawl.root_url else "")
+    bad_canon = [f"{p.url} → {p.canonical}" for p in pages if p.canonical and not is_same_site(p.canonical, root_host)]
+    if any(p.canonical for p in pages):
+        checks.append(_bool_check(
+            "canonical_valid", "Canonical URLs point to this site", "metadata", 1, not bad_canon,
+            "Canonical URLs point to your own site." if not bad_canon else f"{len(bad_canon)} page(s) declare a canonical URL on another site.",
+            "A canonical pointing elsewhere tells search engines to index a different site instead of yours.", bad_canon,
+        ))
+    titles = [p.title.strip() for p in pages if p.title]
+    dupes = sorted({t for t in titles if titles.count(t) > 1})
+    generic = sorted({t for t in titles if is_generic_title(t, brand, root_host)})
+    if titles:
+        checks.append(_bool_check(
+            "title_quality", "Page titles are specific and unique", "metadata", 2, not dupes and not generic,
+            "Titles are specific and unique." if not (dupes or generic) else
+            "; ".join(filter(None, [f"Generic title(s): {', '.join(generic)}" if generic else "",
+                                    f"Duplicate title(s): {', '.join(dupes)}" if dupes else ""])),
+            "Generic titles like 'Home' or an abbreviation don't tell search engines or AI what the page or business is.",
+            [f"\"{t}\"" for t in dict.fromkeys(generic + dupes)],
+        ))
+
     total_weight = sum(c["weight"] for c in checks)
     score = round(100 * sum(c["weight"] * c["score"] for c in checks) / total_weight, 1) if total_weight else 0.0
 
@@ -406,6 +452,12 @@ def evaluate(crawl: CrawlResult, brand: str) -> AuditOutcome:
         "homepage_rendered": bool(home and home.rendered),
         "rendered_pages": list(crawl.rendered_pages)[:30],
         "render_error": crawl.render_error,
+        "link_check": crawl.link_check,
+        # Local business completeness: scored separately from website health
+        "local": evaluate_local(
+            pages, {**(profile or {}), "brand": brand},
+            content_readable=not (home and home.js_shell and not home.rendered),
+        ),
         "js_rendered_pages": [p.url for p in js_pages][:20],
     }
     return AuditOutcome(score=score, checks=checks, page_issues=issues, content_gaps=coverage, site_info=site_info)

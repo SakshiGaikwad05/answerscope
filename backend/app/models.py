@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -61,13 +62,39 @@ class UsageEvent(Base):
 
     __tablename__ = "usage_events"
     __table_args__ = (
-        CheckConstraint("kind IN ('visibility_run', 'question_generation', 'fix_generation')", name="ck_usage_kind"),
+        CheckConstraint(
+            "kind IN ('visibility_run', 'question_generation', 'fix_generation', 'backlink_discovery')", name="ck_usage_kind"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Paid with the user's own API key: doesn't count toward the server-wide cap
+    own_key: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
+USER_KEY_PROVIDERS = ("openai", "anthropic", "gemini", "perplexity", "nvidia", "brave")
+
+
+class UserApiKey(Base):
+    """A user's own provider API key, encrypted at rest (Fernet). Only the last 4 characters are ever shown."""
+
+    __tablename__ = "user_api_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_user_api_key_provider"),
+        CheckConstraint(f"provider IN ({', '.join(repr(p) for p in USER_KEY_PROVIDERS)})", name="ck_user_api_key_provider"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    last4: Mapped[str] = mapped_column(String(4), nullable=False)
+    verified: Mapped[bool | None] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class Project(Base):
@@ -79,10 +106,22 @@ class Project(Base):
     brand_name: Mapped[str] = mapped_column(String(200), nullable=False)
     website_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    industry: Mapped[str | None] = mapped_column(String(200))
+    industry: Mapped[str | None] = mapped_column(String(200))  # business category, e.g. "dental clinic"
+    # Local business profile (owner-provided; verified against the website by the audit)
+    city: Mapped[str | None] = mapped_column(String(120))
+    region: Mapped[str | None] = mapped_column(String(120))
+    country: Mapped[str | None] = mapped_column(String(2))  # ISO 3166-1 alpha-2
+    service_area: Mapped[str | None] = mapped_column(String(300))
+    address: Mapped[str | None] = mapped_column(String(500))
+    phone: Mapped[str | None] = mapped_column(String(40))
+    opening_hours: Mapped[str | None] = mapped_column(String(300))
+    services: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    # Official profiles: Google Business Profile, Facebook, Instagram, directories, ...
+    profile_urls: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     owner: Mapped[User | None] = relationship(back_populates="projects")
+    backlinks: Mapped[list["BacklinkItem"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     competitors: Mapped[list["Competitor"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Competitor.id"
     )
@@ -221,6 +260,8 @@ class ProviderAnswer(Base):
     website_cited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
+    # Optional AI-extracted analysis of the answer (businesses recommended, in order), with its model
+    analysis: Mapped[dict | None] = mapped_column(JSONType)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     run: Mapped[VisibilityRun] = relationship(back_populates="answers")
@@ -321,3 +362,64 @@ class FixDraft(Base):
     # "template" (deterministic) or the model that wrote it
     generator: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+BACKLINK_KINDS = ("existing", "opportunity")
+BACKLINK_STATUSES = ("found", "suggested", "in_progress", "completed", "verified", "not_found", "dismissed")
+
+
+class BacklinkItem(Base):
+    """An existing link/mention of the business, or a legitimate opportunity to earn one.
+
+    kind="existing":    found on a real page during discovery (status "found"; re-checks keep it current)
+    kind="opportunity": status suggested -> in_progress -> completed (by the business) -> verified / not_found
+    """
+
+    __tablename__ = "backlink_items"
+    __table_args__ = (
+        UniqueConstraint("project_id", "url", name="uq_backlink_project_url"),
+        CheckConstraint("kind IN ('existing', 'opportunity')", name="ck_backlink_kind"),
+        CheckConstraint(
+            "status IN ('found', 'suggested', 'in_progress', 'completed', 'verified', 'not_found', 'dismissed')",
+            name="ck_backlink_status",
+        ),
+        CheckConstraint("value_type IN ('backlink', 'mention', 'both', 'unknown')", name="ck_backlink_value"),
+        CheckConstraint("link_rel IN ('follow', 'nofollow', 'ugc', 'sponsored', 'unknown')", name="ck_backlink_rel"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    submission_url: Mapped[str | None] = mapped_column(String(2048))
+    relevance: Mapped[str | None] = mapped_column(Text)  # why it fits this business and location
+    why_it_helps: Mapped[str | None] = mapped_column(Text)
+    value_type: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    link_rel: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    discovered_via: Mapped[str | None] = mapped_column(String(300))  # search backend + query
+    evidence: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    outreach: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    check_error: Mapped[str | None] = mapped_column(Text)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="backlinks")
+
+
+class ApiCache(Base):
+    """Short-lived cache for paid lookups (web search results), keyed by a hash of the request."""
+
+    __tablename__ = "api_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    value: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

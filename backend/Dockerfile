@@ -25,6 +25,7 @@ USER aeo
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
-# Apply migrations, then serve. --proxy-headers trusts X-Forwarded-For from the frontend proxy only
-# (the API is not published to the internet in docker-compose.yml).
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+# Apply migrations, then serve on $PORT (set by hosts such as Render; 8000 otherwise).
+# Client IPs: docker-compose keeps the API private behind the frontend proxy; on a public host set
+# AEO_PROXY_SECRET so only the frontend can call the API and its x-aeo-client-ip header is trusted.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]

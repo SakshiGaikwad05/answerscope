@@ -51,6 +51,47 @@ class PageData:
     js_shell_evidence: str | None = None
     # Content was extracted from a headless-browser render of a JavaScript shell
     rendered: bool = False
+    # Local business facts found on the page
+    local_schema: list[dict] = field(default_factory=list)  # LocalBusiness-like JSON-LD nodes (selected fields)
+    tel_links: list[str] = field(default_factory=list)
+    profile_links: list[str] = field(default_factory=list)  # maps / business-profile / social links
+
+
+# Schema.org types that describe a local business (LocalBusiness and common subtypes)
+LOCAL_SCHEMA_TYPES = {
+    "LocalBusiness", "Store", "Dentist", "MedicalBusiness", "MedicalClinic", "Physician", "Restaurant", "FoodEstablishment",
+    "ProfessionalService", "HomeAndConstructionBusiness", "AutoRepair", "AutomotiveBusiness", "LegalService", "Attorney",
+    "FinancialService", "AccountingService", "HealthAndBeautyBusiness", "BeautySalon", "HairSalon", "ElectronicsStore",
+    "HardwareStore", "GardenStore", "GroceryStore", "ClothingStore", "Bakery", "CafeOrCoffeeShop", "Hotel", "LodgingBusiness",
+    "EducationalOrganization", "ChildCare", "SportsActivityLocation", "ExerciseGym", "RealEstateAgent", "TravelAgency",
+}
+PROFILE_HOSTS = (
+    "google.com/maps", "maps.google.", "g.page", "goo.gl/maps", "maps.app.goo.gl", "business.google.com", "business.site",
+    "facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "youtube.com", "justdial.com", "yelp.",
+    "tripadvisor.", "indiamart.com", "sulekha.com", "bing.com/maps",
+)
+
+
+def _collect_local_nodes(node, out: list[dict]) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _collect_local_nodes(item, out)
+    elif isinstance(node, dict):
+        types = node.get("@type")
+        types = [types] if isinstance(types, str) else [t for t in (types or []) if isinstance(t, str)]
+        if any(t in LOCAL_SCHEMA_TYPES for t in types):
+            addr = node.get("address")
+            if isinstance(addr, dict):
+                addr = ", ".join(str(addr.get(k)) for k in ("streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry") if addr.get(k))
+            hours = node.get("openingHours") or node.get("openingHoursSpecification")
+            out.append({
+                "type": types[0], "name": node.get("name"), "telephone": node.get("telephone"),
+                "address": addr if isinstance(addr, str) else None,
+                "has_hours": bool(hours), "has_geo": bool(node.get("geo")), "url": node.get("url"),
+            })
+        for key in ("@graph", "mainEntity", "itemListElement"):
+            if key in node:
+                _collect_local_nodes(node[key], out)
 
 
 def _collect_schema_types(node, out: list[str]) -> None:
@@ -130,12 +171,22 @@ def extract_page(url: str, html: str | bytes) -> PageData:
             page.schema_errors.append("Invalid JSON-LD block (could not be parsed)")
             continue
         _collect_schema_types(data, schema_types)
+        _collect_local_nodes(data, page.local_schema)
         _faq_questions_from_schema(data, faq_from_schema)
     for tag in soup.find_all(attrs={"itemtype": True}):
         itemtype = str(tag["itemtype"]).rstrip("/").rsplit("/", 1)[-1]
         if itemtype:
             schema_types.append(itemtype)
     page.schema_types = sorted(set(schema_types))
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.lower().startswith("tel:"):
+            page.tel_links.append(href[4:].strip())
+        elif any(h in href.lower() for h in PROFILE_HOSTS):
+            page.profile_links.append(href)
+    page.tel_links = list(dict.fromkeys(page.tel_links))[:10]
+    page.profile_links = list(dict.fromkeys(page.profile_links))[:20]
 
     # Links (collected before stripping nav/footer)
     internal, external = [], []

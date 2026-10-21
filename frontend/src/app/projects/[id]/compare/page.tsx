@@ -54,6 +54,7 @@ export default function ComparePage() {
   const [error, setError] = useState<string | null>(null);
   const [retesting, setRetesting] = useState(false);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [assistantFilter, setAssistantFilter] = useState<string | null>(null);
 
   const latestJob = dashboard?.recent_runs[0];
   const latestStatus = latestJob?.status;
@@ -62,7 +63,12 @@ export default function ComparePage() {
     api.listRuns(projectId).then(setRuns).catch((e: Error) => setError(e.message));
   }, [projectId, latestStatus, latestJob?.id]);
 
-  const completed = useMemo(() => (runs ?? []).filter((r) => r.status === "completed"), [runs]);
+  const allCompleted = useMemo(() => (runs ?? []).filter((r) => r.status === "completed"), [runs]);
+  const testedProviders = useMemo(() => [...new Set(allCompleted.map((r) => r.provider))], [allCompleted]);
+  // Compare within one assistant: ChatGPT vs ChatGPT, Claude vs Claude, ...
+  const provider = assistantFilter ?? testedProviders[0] ?? null;
+  const completed = useMemo(() => allCompleted.filter((r) => r.provider === provider), [allCompleted, provider]);
+  const assistantName = (name: string) => dashboard?.providers.find((p) => p.name === name)?.assistant || name;
 
   // Default: latest completed run vs the run it retested (or the previous completed run).
   const target = targetId ?? completed[0]?.id ?? null;
@@ -111,6 +117,15 @@ export default function ComparePage() {
       description="After you make changes, ask the AI the exact same questions again and compare the results."
     >
       <div className="flex flex-wrap items-center gap-3">
+        {testedProviders.length > 1 && (
+          <label className="flex items-center gap-2">
+            <span className="text-slate-600">Assistant</span>
+            <select value={provider ?? ""} onChange={(e) => { setAssistantFilter(e.target.value); setBaseId(null); setTargetId(null); }}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1.5">
+              {testedProviders.map((p) => <option key={p} value={p}>{assistantName(p)}</option>)}
+            </select>
+          </label>
+        )}
         <Button onClick={retest} loading={retesting || !!running} disabled={!completed[0] || quotaLeft === 0}>
           {running ? "Test running…" : completed[0] ? `Retest the questions from run #${completed[0].id}` : "Retest"}
         </Button>

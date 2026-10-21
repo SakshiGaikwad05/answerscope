@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { useProject } from "@/components/ProjectContext";
-import { ProviderNotConfigured, RunConditionsNote } from "@/components/ProviderNotice";
-import { Badge, Button, Card, EmptyState, Meter, StatTile, StatusBadge } from "@/components/ui";
+import { OverviewPanel } from "@/components/OverviewPanel";
+import { ProviderNotConfigured } from "@/components/ProviderNotice";
+import { Button, Card, StatusBadge } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
-import { METRIC_DEFINITIONS, dateTime, isActive, pct } from "@/lib/format";
+import { dateTime, isActive } from "@/lib/format";
 
 function Step({ n, title, children, action }: { n: number; title: string; children: React.ReactNode; action: React.ReactNode }) {
   return (
@@ -35,6 +36,8 @@ export default function DashboardPage() {
   const auditRunning = isActive(latestAuditJob?.status);
   const runRunning = isActive(latestRunJob?.status);
   const configured = dashboard.providers.some((p) => p.configured);
+  const configuredAssistants = dashboard.providers.filter((p) => p.configured).map((p) => p.assistant || p.display_name);
+  const runsAvailable = dashboard.usage?.visibility_run.remaining ?? Infinity;
   const metrics = dashboard.latest_run_metrics;
   const audit = dashboard.latest_audit;
 
@@ -109,41 +112,46 @@ export default function DashboardPage() {
           </Step>
           <Step
             n={3}
-            title="AI visibility test"
+            title="AI visibility test (all configured assistants)"
             action={
               <Button
                 loading={busy === "run" || runRunning}
-                disabled={!configured || !dashboard.active_question_count || dashboard.usage?.visibility_run.remaining === 0}
-                onClick={() => act("run", () => api.startRun(projectId))}
+                disabled={!configured || !dashboard.active_question_count || runsAvailable < configuredAssistants.length}
+                onClick={() =>
+                  act("run", () => api.startMultiRun(projectId), (r) => {
+                    const runs = r as { provider: string }[];
+                    return `Started ${runs.length} test${runs.length === 1 ? "" : "s"}: ${configuredAssistants.join(", ")}. Each assistant gets the same questions.`;
+                  })
+                }
                 title={
                   !configured
                     ? "Configure an AI provider API key first"
                     : !dashboard.active_question_count
                       ? "Generate questions first"
-                      : dashboard.usage?.visibility_run.remaining === 0
-                        ? "Daily visibility test limit reached"
+                      : runsAvailable < configuredAssistants.length
+                        ? `Needs ${configuredAssistants.length} visibility tests; ${runsAvailable} left today`
                         : undefined
                 }
               >
-                {runRunning ? "Testing…" : "Run visibility test"}
+                {runRunning ? "Testing…" : `Test ${configuredAssistants.length || ""} assistant${configuredAssistants.length === 1 ? "" : "s"}`}
               </Button>
             }
           >
             {!configured ? (
-              "Requires an AI provider API key (see setup note above)."
+              <>Needs at least one assistant API key (ChatGPT, Claude, Gemini or Perplexity). <Link href="/keys" className="font-medium text-indigo-700 hover:underline">Add API keys</Link></>
             ) : latestRunJob ? (
               <span className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={latestRunJob.status} />
                 {isActive(latestRunJob.status) && (
                   <span>
-                    {latestRunJob.completed_questions} of {latestRunJob.total_questions} questions answered
+                    {latestRunJob.completed_questions} of {latestRunJob.total_questions} questions processed
                   </span>
                 )}
                 {latestRunJob.status === "failed" && <span className="text-rose-700">{latestRunJob.error}</span>}
                 {latestRunJob.status === "completed" && <span>{latestRunJob.model} · {dateTime(latestRunJob.completed_at)}</span>}
               </span>
             ) : (
-              "Asks each question to the AI provider and records mentions, citations and competitors."
+              `Asks each question to ${configuredAssistants.join(", ")} and records mentions, citations, list position and competitors.`
             )}
           </Step>
         </ol>
@@ -165,6 +173,8 @@ export default function DashboardPage() {
         )}
       </Card>
 
+      <OverviewPanel overview={dashboard.overview} projectId={projectId} />
+
       {metrics && metrics.branded_unknown > 0 && (
         <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">
@@ -180,80 +190,8 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <section aria-labelledby="kpis">
-        <h2 id="kpis" className="sr-only">Key metrics</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatTile
-            label="Questions tested"
-            value={metrics ? metrics.questions_tested : "—"}
-            sub={metrics ? (metrics.questions_failed ? `${metrics.questions_failed} failed and excluded` : "All questions answered") : "No visibility test yet"}
-            definition={METRIC_DEFINITIONS.questionsTested}
-          />
-          <StatTile
-            label="Unprompted mention rate"
-            value={pct(metrics?.unbranded_mention_rate)}
-            sub={
-              metrics
-                ? metrics.unbranded_questions
-                  ? `${metrics.unbranded_mentions} of ${metrics.unbranded_questions} questions that don't name you · all answers: ${pct(metrics.brand_mention_rate)}`
-                  : "Every question named your brand"
-                : "No visibility test yet"
-            }
-            definition={METRIC_DEFINITIONS.unpromptedRate}
-          />
-          <StatTile
-            label="Website citation rate"
-            value={pct(metrics?.website_citation_rate)}
-            sub={metrics ? `${metrics.website_citations} of ${metrics.questions_tested} answers` : "No visibility test yet"}
-            definition={METRIC_DEFINITIONS.citationRate}
-          />
-          <StatTile
-            label="Website audit score"
-            value={audit?.score != null ? <>{audit.score}<span className="text-lg text-slate-400">/100</span></> : "—"}
-            sub={audit ? `${audit.pages_crawled} pages · ${dateTime(audit.completed_at)}` : "No completed audit yet"}
-            definition={METRIC_DEFINITIONS.auditScore}
-          />
-        </div>
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-5">
+      <div className="grid gap-6 lg:grid-cols-2">
         <Card
-          className="lg:col-span-3"
-          title="Competitor visibility"
-          description="Share of tested answers in the latest run that mention each brand"
-          actions={metrics && <Link href={`/projects/${projectId}/competitors`} className="text-sm font-medium text-indigo-700 hover:underline">Details →</Link>}
-        >
-          {metrics && dashboard.latest_run ? (
-            <div className="space-y-4">
-              <ul className="space-y-3">
-                {[...metrics.entities]
-                  .sort((a, b) => (b.mention_rate ?? 0) - (a.mention_rate ?? 0))
-                  .map((e) => (
-                    <li key={e.entity_type + e.name}>
-                      <p className="mb-1 text-sm text-slate-700">
-                        <span className={e.entity_type === "brand" ? "font-semibold text-slate-900" : ""}>{e.name}</span>
-                        {e.entity_type === "brand" && <Badge tone="accent" className="ml-2">you</Badge>}
-                      </p>
-                      <Meter value={e.mention_rate} label={`${e.name} mention rate`} emphasize={e.entity_type === "brand"} />
-                    </li>
-                  ))}
-              </ul>
-              {metrics.entities.length === 1 && (
-                <p className="text-sm text-slate-500">Add competitors in Settings to compare against them in the next run.</p>
-              )}
-              <p className="text-xs text-slate-500">{METRIC_DEFINITIONS.competitorVisibility}</p>
-              <RunConditionsNote conditions={dashboard.latest_run.conditions} when={dateTime(dashboard.latest_run.completed_at)} />
-            </div>
-          ) : (
-            <EmptyState
-              title="No visibility data yet"
-              description={configured ? "Generate questions and run a visibility test to see how often each brand is mentioned." : "Configure an AI provider to collect real AI answers."}
-            />
-          )}
-        </Card>
-
-        <Card
-          className="lg:col-span-2"
           title="Action plan"
           actions={<Link href={`/projects/${projectId}/recommendations`} className="text-sm font-medium text-indigo-700 hover:underline">Open →</Link>}
         >
@@ -288,16 +226,15 @@ export default function DashboardPage() {
             </div>
           )}
         </Card>
-      </div>
 
-      <Card title="Recent audit history" actions={<Link href={`/projects/${projectId}/history`} className="text-sm font-medium text-indigo-700 hover:underline">Full history →</Link>}>
+        <Card title="Recent activity" actions={<Link href={`/projects/${projectId}/history`} className="text-sm font-medium text-indigo-700 hover:underline">Full history →</Link>}>
         {dashboard.recent_audits.length + dashboard.recent_runs.length === 0 ? (
           <p className="text-sm text-slate-500">Nothing has run yet.</p>
         ) : (
           <ul className="divide-y divide-slate-100 text-sm">
             {[
               ...dashboard.recent_audits.map((a) => ({ kind: "Website audit", id: a.id, status: a.status, at: a.created_at, detail: a.score != null ? `Score ${a.score}/100` : a.error ?? a.progress_message ?? "", href: `/projects/${projectId}/audit?audit=${a.id}` })),
-              ...dashboard.recent_runs.map((r) => ({ kind: "Visibility test", id: r.id, status: r.status, at: r.created_at, detail: `${r.model} · ${r.completed_questions}/${r.total_questions} answered${r.error ? ` · ${r.error}` : ""}`, href: `/projects/${projectId}/results?run=${r.id}` })),
+              ...dashboard.recent_runs.map((r) => ({ kind: "Visibility test", id: r.id, status: r.status, at: r.created_at, detail: `${r.model} · ${r.completed_questions}/${r.total_questions} processed${r.error ? ` · ${r.error}` : ""}`, href: `/projects/${projectId}/results?run=${r.id}` })),
             ]
               .sort((a, b) => b.at.localeCompare(a.at))
               .slice(0, 6)
@@ -313,7 +250,8 @@ export default function DashboardPage() {
               ))}
           </ul>
         )}
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }

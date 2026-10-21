@@ -99,6 +99,8 @@ class CrawlResult:
     stopped_early: str | None = None  # why the crawl ended before max_pages, if it did
     rendered_pages: list[str] = field(default_factory=list)  # pages rendered in a headless browser
     render_error: str | None = None
+    # Internal links that were checked without being crawled: {"checked": n, "broken": [{url, status, found_on}]}
+    link_check: dict = field(default_factory=lambda: {"checked": 0, "broken": []})
 
 
 def _origin(url: str) -> str:
@@ -362,7 +364,30 @@ class SiteCrawler:
                     candidates[k] = link
                     queue.append(link)
             queue.sort(key=lambda u: (-_priority(u), len(u)))
+        self._check_links(result, seen)
         return result
+
+    MAX_LINK_CHECKS = 20
+
+    def _check_links(self, result: CrawlResult, seen: set[str]) -> None:
+        """Check internal links that weren't crawled, so broken links are reported with where they appear."""
+        found_on: dict[str, str] = {}
+        for cp in result.pages:
+            for link in cp.data.internal_links:
+                if _canonical_key(link) not in seen:
+                    found_on.setdefault(link, cp.data.url)
+        broken = [{"url": f["url"], "status": f["error"], "found_on": None} for f in result.failures]
+        checked = 0
+        for link, source in list(found_on.items())[: self.MAX_LINK_CHECKS]:
+            checked += 1
+            try:
+                res = self.fetcher.fetch(link)
+            except (FetchError, UnsafeURLError) as exc:
+                broken.append({"url": link, "status": getattr(exc, "code", "error"), "found_on": source})
+                continue
+            if res.status_code >= 400:
+                broken.append({"url": link, "status": f"HTTP {res.status_code}", "found_on": source})
+        result.link_check = {"checked": checked + len(result.failures), "broken": broken[:30]}
 
     def close(self) -> None:
         self.fetcher.close()

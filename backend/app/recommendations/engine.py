@@ -43,6 +43,9 @@ class RecInput:
     js_shell_homepage: bool = False
     # Homepage HTML is an empty JavaScript shell (true even when we rendered it in a browser)
     homepage_js_only: bool = False
+    # Local business audit result (site_info["local"]) and backlink summary, when available
+    local: dict | None = None
+    backlinks: dict | None = None
 
 
 def score_for(priority: str, confidence: str, effort: str, blocking: bool = False) -> float:
@@ -204,6 +207,21 @@ def audit_recommendations(inp: RecInput) -> list[dict]:
                          "A single clear H1 per page signals its main topic.",
                          "Give each page one descriptive H1 and organize sections with H2/H3.", c["evidence"], "audit",
                          effort="low", confidence="high", verify=_audit_verify(c["label"])))
+    if c := failing("broken_links"):
+        recs.append(_rec("crawl:broken-links", "crawlability", "medium", f"Broken internal links: {c['detail']}",
+                         "Broken links send crawlers and visitors to dead ends and hide the pages they point to.",
+                         "Fix or remove each broken link (the evidence shows where each one appears), or redirect the old URL.",
+                         c["evidence"], "audit", effort="low", confidence="high", verify=_audit_verify(c["label"])))
+    if c := failing("canonical_valid"):
+        recs.append(_rec("meta:canonical-offsite", "metadata", "high", "Canonical tags point to another website.",
+                         "A canonical URL on another site tells search engines to index that site instead of yours.",
+                         "Point each page's <link rel=\"canonical\"> at its own URL on your domain.",
+                         c["evidence"], "audit", effort="low", confidence="high", verify=_audit_verify(c["label"])))
+    if c := failing("title_quality"):
+        recs.append(_rec("meta:title-quality", "metadata", "high", f"Generic or duplicate page titles: {c['detail']}",
+                         "Titles like an abbreviation or 'Home' don't tell search engines or AI assistants what you do or where.",
+                         f"Give every page a unique title naming {inp.brand}, what the page offers and, for local pages, the town or city.",
+                         c["evidence"], "audit", effort="low", confidence="high", verify=_audit_verify(c["label"])))
     if c := failing("robots_txt"):
         recs.append(_rec("crawl:robots-txt", "crawlability", "low", "No robots.txt file was found.",
                          "Without robots.txt, crawlers assume everything is allowed, which is fine, but you lose a place to point to your sitemap.",
@@ -375,6 +393,120 @@ def visibility_recommendations(inp: RecInput) -> list[dict]:
     return recs
 
 
+LOCAL_RULES = {
+    # check id: (priority, effort, issue, why, action)
+    "local_phone": ("high", "low", "Your phone number isn't shown on your website.",
+                    "AI assistants and search engines confirm contact details from your own site; a missing or different number weakens trust.",
+                    "Show your phone number as text (and a tel: link) in the header or footer of every page."),
+    "local_city": ("high", "low", "Your website doesn't say which town or city you serve.",
+                   "Local questions name a place. Pages that clearly state your location are the ones that can answer them.",
+                   "Name your town/city and service area in the homepage title, main heading, and contact section."),
+    "local_address": ("medium", "low", "Your address isn't on your website.",
+                      "A complete, consistent address lets maps, search engines and AI place your business correctly.",
+                      "Add your full address to the contact page and footer, written exactly as in your Google Business Profile."),
+    "local_contact_page": ("medium", "low", "There is no contact or location page.",
+                           "A contact page is where people and crawlers look for address, phone and hours.",
+                           "Create a /contact page with address, phone, opening hours, a map link and directions."),
+    "local_hours": ("low", "low", "Opening hours aren't published on your website.",
+                    "People ask assistants whether a business is open now; published hours let them answer.",
+                    "Show opening hours on the contact page and keep them identical to your Google Business Profile."),
+    "local_gbp": ("high", "medium", "No Google Business Profile was found for the business.",
+                  "Your Google Business Profile feeds Google Maps and local results, a major source for local recommendations.",
+                  "Create or claim your Google Business Profile, verify it, fill in category, hours, photos and services, then add its link to this project and your website."),
+    "local_profiles": ("low", "low", "Your website doesn't link to your official profiles.",
+                       "Linking official profiles helps search engines and AI connect them to the same business.",
+                       "Link your Google Business Profile and social profiles from the website footer."),
+    "local_services": ("medium", "medium", "Some of your services have no content on the website.",
+                       "Questions like 'who offers X near me' are answered from pages that clearly describe X.",
+                       "Give each main service its own page or section that names the service, who it's for, and your location."),
+}
+
+
+def local_recommendations(inp: RecInput) -> list[dict]:
+    if not inp.local:
+        return []
+    recs = []
+    for c in inp.local.get("checks", []):
+        cid = c["id"]
+        if c["status"] != "fail":
+            continue
+        verify = f"Re-run the website audit. The local check \"{c['label']}\" should pass."
+        if cid == "local_schema":
+            inconsistent = any("differs" in e or "doesn't include" in e for e in c["evidence"])
+            recs.append(_rec(
+                "local:schema", "local", "high" if inconsistent else "medium",
+                "Your structured data contradicts your business details." if inconsistent else "No LocalBusiness structured data was found.",
+                "Structured data states your official name, address, phone and hours to machines. Wrong values spread wrong facts.",
+                "Add (or correct) LocalBusiness JSON-LD on the homepage using only your verified details. A draft is available below.",
+                [c["detail"], *c["evidence"]], "audit", effort="low", confidence="high", verify=verify,
+            ))
+            continue
+        if cid not in LOCAL_RULES:
+            continue
+        priority, effort, issue, why, action = LOCAL_RULES[cid]
+        recs.append(_rec(f"local:{cid.removeprefix('local_')}", "local", priority, issue, why, c.get("fix_hint") or action,
+                         [c["detail"], *c["evidence"]], "audit", effort=effort, confidence="high", verify=verify))
+    unknown = [c for c in inp.local.get("checks", []) if c["status"] == "unknown" and "profile" in c["detail"]]
+    if unknown:
+        recs.append(_rec(
+            "local:complete-profile", "local", "medium", "Your business profile in this tool is incomplete, so some local checks can't run.",
+            "Without your city, phone, address and services, the audit can't verify that your website shows them correctly.",
+            "Open Settings and add your city, service area, phone, address, opening hours, services and official profile links.",
+            [f"Can't check: {c['label']}" for c in unknown], "audit", effort="low", confidence="high",
+            verify="Re-run the website audit; these checks will then show pass or fail.",
+        ))
+    return recs
+
+
+def backlink_recommendations(inp: RecInput) -> list[dict]:
+    b = inp.backlinks
+    if not b or not b.get("discovered"):
+        return []
+    recs = []
+    if b.get("existing", 0) == 0:
+        recs.append(_rec(
+            "backlinks:none-found", "backlinks", "medium",
+            "No other websites linking to or mentioning your business were found in search results.",
+            "Assistants and search engines learn about businesses from other sites: directories, local news, associations, suppliers.",
+            "Work through the verified opportunities in the Backlinks tab: complete accurate listings and ask partners to link to you. "
+            "Avoid paid link schemes; they can harm you.",
+            [f"Searched with: {b.get('backend')}", f"Opportunities found: {b.get('opportunities', 0)}"], "backlinks",
+            effort="medium", confidence="medium",
+            verify="After listings go live, use 'Verify' on each opportunity; verified links appear under 'Verified after completion'.",
+        ))
+    if b.get("suggested", 0):
+        recs.append(_rec(
+            "backlinks:opportunities", "backlinks", "medium",
+            f"{b['suggested']} verified listing/mention opportunities are waiting for action.",
+            "Accurate listings on relevant local and industry sites help people, search engines and AI find and confirm your business.",
+            "Open the Backlinks tab, start with the most relevant local directories and associations, and mark each as completed when done.",
+            [f"Top: {u}" for u in b.get("top", [])[:5]], "backlinks", effort="medium", confidence="medium",
+            verify="Mark items completed, then use 'Verify' to confirm the link or mention is live.",
+        ))
+    return recs
+
+
+GROUPS = {
+    "technical": "Critical technical problems",
+    "local": "Local SEO improvements",
+    "content": "Content improvements",
+    "backlinks": "Backlink and brand mention opportunities",
+    "ai_visibility": "AI visibility improvements",
+}
+
+
+def group_for(key: str) -> str:
+    if key.startswith("local:"):
+        return "local"
+    if key.startswith("backlinks:"):
+        return "backlinks"
+    if key.startswith(("content:", "consistency:")):
+        return "content"
+    if key.startswith(("visibility:", "competitors:", "citations:", "data:")):
+        return "ai_visibility"
+    return "technical"
+
+
 def is_evaluated(key: str, inp: RecInput) -> bool:
     """Whether the latest data could have produced this recommendation.
 
@@ -382,6 +514,15 @@ def is_evaluated(key: str, inp: RecInput) -> bool:
     that would detect it was actually checked (not, for example, skipped because
     the homepage is a JavaScript shell or no visibility run exists yet).
     """
+    if key.startswith("local:"):
+        if not inp.local:
+            return False
+        if key in ("local:complete-profile", "local:schema"):
+            return True
+        status = {c["id"]: c["status"] for c in inp.local.get("checks", [])}.get("local_" + key.split(":", 1)[1])
+        return status is not None and status != "unknown"
+    if key.startswith("backlinks:"):
+        return bool(inp.backlinks and inp.backlinks.get("discovered"))
     source_is_visibility = key.startswith(("visibility:", "competitors:", "citations:", "consistency:", "data:"))
     if source_is_visibility:
         return bool(inp.run_metrics and inp.run_metrics.get("questions_tested"))
@@ -393,7 +534,7 @@ def is_evaluated(key: str, inp: RecInput) -> bool:
 
 
 def build_recommendations(inp: RecInput) -> list[dict]:
-    recs = visibility_recommendations(inp) + audit_recommendations(inp)
+    recs = visibility_recommendations(inp) + audit_recommendations(inp) + local_recommendations(inp) + backlink_recommendations(inp)
     out, seen = [], set()
     # Highest score first: blocking root causes, then impact × confidence ÷ effort.
     for r in sorted(recs, key=lambda r: (-r["score"], PRIORITY_ORDER[r["priority"]])):

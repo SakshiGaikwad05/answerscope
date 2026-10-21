@@ -159,3 +159,14 @@ def test_metrics_split_branded_unbranded_and_exclude_unknown_mentions():
     assert m["brand_unknown_answers"] == 2
     assert m["brand_mentions"] == 2  # unknown answers don't count
     assert m["brand_mention_rate"] == round(100 * 2 / 7, 1)
+
+
+def test_gemini_redirect_citation_matches_by_domain_title():
+    brand = EntitySpec(name="Gawande Krushi Kendra", entity_type="brand", domain="gawandekrushikendra.store")
+    redirect = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/abc"
+    r = analyze_answer("Try Gawande Krushi Kendra.", [{"url": redirect, "title": "gawandekrushikendra.store", "type": "cited"}], brand, [])
+    assert r.website_cited
+    r = analyze_answer("Try Gawande Krushi Kendra.", [{"url": redirect, "title": "Some article about stores", "type": "cited"}], brand, [])
+    assert not r.website_cited
+    r = analyze_answer("x", [{"url": redirect, "title": "gawandekrushikendra.store.evil.com", "type": "cited"}], brand, [])
+    assert not r.website_cited

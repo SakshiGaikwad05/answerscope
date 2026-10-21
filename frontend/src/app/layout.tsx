@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AnswerScope — AI answer visibility",
-  description: "See how visible your brand is in AI-generated answers, and what to fix.",
+  title: "AnswerScope — AI visibility for local businesses",
+  description: "Check whether ChatGPT, Claude, Gemini and Perplexity can find your business, and get an evidence-based fix list.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -29,7 +29,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2">
           Skip to content
         </a>
-        <header className="border-b border-slate-200 bg-white">
+        <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/75">
           <nav className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6" aria-label="Main">
             <Link href="/" className="flex items-center gap-2 font-semibold text-slate-900">
               <span aria-hidden="true" className="grid h-7 w-7 place-items-center rounded-lg bg-accent text-sm text-white">A</span>
@@ -41,8 +41,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </nav>
         </header>
         <main id="main" className="flex-1">{children}</main>
-        <footer className="border-t border-slate-200 bg-white py-6 text-center text-xs text-slate-500">
-          AI provider answers come from APIs and can differ from consumer apps. No change guarantees AI citations or rankings.
+        <footer className="border-t border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-6 text-xs text-slate-500 sm:px-6">
+            <span>AnswerScope</span>
+            <span>AI answers come from provider APIs and can differ from the consumer apps. No change guarantees AI recommendations.</span>
+          </div>
         </footer>
       </body>
     </html>

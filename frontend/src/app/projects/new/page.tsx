@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 
 import { CompetitorFields, cleanCompetitors, type CompetitorDraft } from "@/components/CompetitorFields";
+import { EMPTY_LOCAL, LocalProfileFields, localPayload, type LocalDraft } from "@/components/LocalProfileFields";
 import { Button, Card } from "@/components/ui";
 import { api } from "@/lib/api";
 
@@ -17,6 +18,7 @@ export default function NewProjectPage() {
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [brand, setBrand] = useState("");
   const [industry, setIndustry] = useState("");
+  const [local, setLocal] = useState<LocalDraft>(EMPTY_LOCAL);
   const [competitors, setCompetitors] = useState<CompetitorDraft[]>([{ name: "", website_url: "" }]);
   const [startAudit, setStartAudit] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +38,7 @@ export default function NewProjectPage() {
         brand_name: brand.trim(),
         industry: industry.trim() || undefined,
         competitors: cleanCompetitors(competitors),
+        ...localPayload(local),
       });
       if (startAudit) await api.startAudit(project.id);
       router.push(`/projects/${project.id}`);
@@ -90,11 +93,12 @@ export default function NewProjectPage() {
               maxLength={200}
               value={industry}
               onChange={(e) => setIndustry(e.target.value)}
-              placeholder="e.g. project management software"
+              placeholder="e.g. dental clinic, agricultural store"
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
             <p className="mt-1 text-xs text-slate-500">Used to phrase category questions like “What are the best … ?”</p>
           </div>
+          <LocalProfileFields value={local} onChange={setLocal} />
           <CompetitorFields value={competitors} onChange={setCompetitors} />
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input type="checkbox" checked={startAudit} onChange={(e) => setStartAudit(e.target.checked)} className="h-4 w-4" />

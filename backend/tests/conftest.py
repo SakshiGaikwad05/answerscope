@@ -2,7 +2,8 @@ import os
 
 # Never let tests pick up real credentials or databases from backend/.env or the environment.
 os.environ["AEO_DISABLE_ENV_FILE"] = "1"
-os.environ["ANTHROPIC_API_KEY"] = ""
+for _key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "PERPLEXITY_API_KEY", "NVIDIA_API_KEY", "BRAVE_API_KEY"):
+    os.environ[_key] = ""
 os.environ["DATABASE_URL"] = "sqlite://"
 
 import pytest  # noqa: E402

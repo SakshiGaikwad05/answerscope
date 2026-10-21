@@ -1,14 +1,16 @@
-# AnswerScope — AEO (Answer Engine Optimization) MVP
+# AnswerScope — AI visibility & local business growth
 
-AnswerScope shows how visible a brand is in AI-generated answers and what to improve.
+AnswerScope shows how visible a business is in AI-generated answers (ChatGPT, Claude, Gemini, Perplexity) and what to improve: website accessibility, accurate local information, useful content and legitimate online mentions. It never promises that any assistant will recommend a business.
 
 1. **Website audit**: crawls the site's public pages, respects robots.txt, and checks titles, descriptions, headings, structured data, FAQ content, sitemap, AI crawler access and coverage of common customer questions.
 2. **Question generation**: produces 20 questions buyers might ask an AI assistant. It uses the configured LLM if there is one, and deterministic templates otherwise.
-3. **AI visibility tests**: sends each question to a real AI provider (Anthropic Claude, optionally with web search). For each answer it records brand mentions, website citations and competitor mentions, with evidence.
-4. **Dashboard, competitor comparison and history**: all of these are computed from recorded results.
-5. **Action plan + fix generator**: prioritized fixes with status tracking, plus ready-to-review drafts (meta tags, schema, FAQ, comparison and pricing pages, sitemap.xml, robots.txt) grounded only in the site's own content.
+3. **AI visibility tests across assistants**: sends the same questions to each configured assistant's official API (OpenAI, Anthropic, Google Gemini, Perplexity), with web search and the business's location where the API supports it. For each answer it records brand mentions, website citations, sources, competitor mentions, list position (when the answer is a list), whether the answer mentions the business's area, and errors, with evidence. These are **API results, not the consumer apps**.
+4. **Local business profile & local SEO checks**: city, service area, address, phone, hours, services and official profiles. The audit checks that the website actually shows these details, flags inconsistencies, and drafts `LocalBusiness` structured data using only verified facts.
+5. **Backlinks & brand mentions**: finds existing mentions and legitimate opportunities (directories, chambers, local news, associations, suppliers, review platforms, community sites) through a web search API, loads every page to verify it, and tracks each opportunity from suggested → completed → verified. No authority scores, no paid links, no mass submission.
+6. **Dashboard, competitor comparison and history**: an overview with a transparently calculated AI visibility score, assistant-by-assistant results, website health, local SEO completeness, backlinks, who AI recommends instead, and top actions. Everything is computed from recorded results; missing data is shown as "not measured", never as zero.
+7. **Action plan + fix generator**: prioritized fixes grouped into critical technical problems, local SEO, content, backlinks & mentions, and AI visibility, with status tracking, retest and per-assistant compare, plus ready-to-review drafts grounded only in the site's own content. Nothing is ever changed on the live website.
 
-Each user has a private account; AI usage is capped per user and globally to protect the server's API key.
+Each user has a private account. Users can save their **own API keys** (API keys page): keys are encrypted at rest, never shown again after saving, and used only for that user's tests. On a public deployment the server's own keys can be switched off (`AEO_USE_SERVER_API_KEYS=false`), so nobody can run up the operator's bill. AI usage is also capped per user, and globally for the server's own keys.
 
 Nothing is simulated. If no provider API key is configured, visibility tests are disabled and the UI says so. The audit still works.
 
@@ -74,7 +76,16 @@ Tests use in-memory SQLite and mocked network and provider calls, so they never 
 |---|---|---|
 | `DATABASE_URL` | none (required) | PostgreSQL connection, e.g. `postgresql+psycopg://aeo:<password>@localhost:5432/aeo`. Keep it only in `backend/.env` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Origins allowed to call the API directly. Not needed with the default `/api` proxy |
-| `ANTHROPIC_API_KEY` | empty | Enables AI question generation and visibility tests |
+| `ANTHROPIC_API_KEY` | empty | Claude visibility tests (and question generation if no NVIDIA key) |
+| `OPENAI_API_KEY` / `AEO_OPENAI_MODEL` | empty / `gpt-5.5` | ChatGPT visibility tests (Responses API with the `web_search` tool) |
+| `GEMINI_API_KEY` / `AEO_GEMINI_MODEL` | empty / `gemini-3.8-flash` | Gemini visibility tests (Interactions API with `google_search`) |
+| `PERPLEXITY_API_KEY` / `AEO_PERPLEXITY_PRESET` | empty / `low` | Perplexity visibility tests (Agent API preset). Also usable as the backlink search backend (Search API) |
+| `AEO_PROVIDER_TIMEOUT_SECONDS` | 120 | Timeout per assistant request |
+| `NVIDIA_API_KEY` / `AEO_NVIDIA_MODEL` / `AEO_NVIDIA_BASE_URL` | empty / `meta/llama-3.3-70b-instruct` / `https://integrate.api.nvidia.com/v1` | Analysis model (question generation, extracting which businesses an answer recommends). Never used as a measured assistant |
+| `BRAVE_API_KEY` | empty | Brave Search API for backlink & mention discovery (Perplexity Search is used if only that key is set) |
+| `AEO_SECRETS_KEY` | empty | Encrypts users' saved API keys (Fernet key, or any random string of 32+ characters). Unset = saving keys is disabled. Keep it stable: changing it makes saved keys unreadable |
+| `AEO_USE_SERVER_API_KEYS` | `true` | `false`: the provider keys above are never used for users; everyone tests with their own keys |
+| `AEO_PROXY_SECRET` | empty | Shared secret the frontend sends with every `/api` request (`BACKEND_PROXY_SECRET` in the frontend). When set, the API rejects direct calls and trusts the client IP the frontend passes |
 | `AEO_ANTHROPIC_MODEL` | `claude-opus-5-5` | Model used for answers |
 | `AEO_ANTHROPIC_EFFORT` | `medium` | `low` … `max`; trades depth for cost/latency |
 | `AEO_ANTHROPIC_WEB_SEARCH` | `true` | Let Claude search the web (needed to observe citations) |
@@ -87,7 +98,8 @@ Tests use in-memory SQLite and mocked network and provider calls, so they never 
 | `ALLOW_REGISTRATION` | `true` | Allow new sign-ups |
 | `COOKIE_SECURE` | `false` | Send the session cookie only over HTTPS (set `true` in production) |
 | `SESSION_DAYS` | 30 | Session lifetime |
-| `QUOTA_VISIBILITY_RUNS_PER_USER_PER_DAY` / `_GLOBAL_PER_DAY` | 3 / 20 | AI visibility tests per user / across all users, rolling 24 h |
+| `QUOTA_VISIBILITY_RUNS_PER_USER_PER_DAY` / `_GLOBAL_PER_DAY` | 8 / 60 | AI visibility tests per user / across all users, rolling 24 h. Testing N assistants at once uses N |
+| `QUOTA_BACKLINK_DISCOVERIES_PER_USER_PER_DAY` / `_GLOBAL_PER_DAY` | 3 / 30 | Backlink discovery runs (search results are cached for 7 days) |
 | `QUOTA_QUESTION_GENERATIONS_PER_USER_PER_DAY` / `_GLOBAL_PER_DAY` | 10 / 100 | AI question generation (templates are free) |
 | `QUOTA_FIX_GENERATIONS_PER_USER_PER_DAY` / `_GLOBAL_PER_DAY` | 20 / 200 | AI fix drafts (template drafts are free) |
 | `RATE_LIMIT_AUTH_PER_MINUTE` / `RATE_LIMIT_WRITES_PER_MINUTE` | 10 / 30 | Login attempts per IP; write requests per user |
@@ -108,7 +120,7 @@ Notes:
 | `NEXT_PUBLIC_API_URL` | unset | Only for calling a separately hosted API directly from the browser. That API's `CORS_ORIGINS` must then include the frontend's origin |
 
 The browser always talks to the frontend's own origin (`/api/...`) and Next forwards those requests to the backend. The app therefore works the same whether you open `localhost:3000`, the "Network" address that `next dev` prints (for example the WSL IP), or a LAN hostname. No CORS setup is needed.
-- Cost: with web search on, a 20-question run makes 20 or more Messages API calls plus web searches. Lower `AEO_ANTHROPIC_EFFORT` or `VISIBILITY_MAX_QUESTIONS` to reduce cost.
+- Cost: with web search on, a 20-question run makes 20 or more API calls plus web searches **per assistant**. Lower `AEO_ANTHROPIC_EFFORT` or `VISIBILITY_MAX_QUESTIONS` to reduce cost.
 
 ---
 
@@ -128,10 +140,16 @@ backend/ (FastAPI + SQLAlchemy 2 + Alembic + Pydantic v2)
   app/analysis/extract.py     HTML → title, meta, headings, links, text, JSON-LD/microdata, FAQ detection
   app/analysis/audit.py       weighted checks, page issues, topic coverage (unanswered questions)
   app/questions/generator.py  LLM questions (structured output) + deterministic template fallback
-  app/providers/              adapter interface, Anthropic implementation, registry
+  app/providers/              adapter interface; openai, anthropic, gemini, perplexity (assistants);
+                              nvidia (analysis only); registry (analysis_provider, search_backend)
   app/visibility/detection.py mention / citation detection with evidence
+  app/visibility/position.py  list position + location relevance
+  app/visibility/extraction.py AI-extracted businesses (names must appear verbatim in the answer)
   app/visibility/metrics.py   metric calculations
-  app/recommendations/engine.py  evidence-backed, prioritized recommendations
+  app/analysis/local.py       local SEO checks against the business profile
+  app/backlinks/              web search (cached), page verification, categories, outreach drafts
+  app/services/overview.py    dashboard overview (scores, per-assistant table, top actions)
+  app/recommendations/engine.py  evidence-backed, prioritized, grouped recommendations
   app/services/jobs.py        background audit & visibility jobs (FastAPI BackgroundTasks)
   app/api/routes.py           REST API
   alembic/                    migrations
@@ -150,7 +168,12 @@ Metrics come only from the answers recorded in a single completed run. Failed qu
 - **Website citation rate**: the share of tested answers whose provider-cited sources, or links in the answer text, include a URL on the brand's domain or a subdomain. Search results the model retrieved but didn't cite don't count.
 - **Competitor visibility**: the same two rates per competitor, measured on the same answers. Citations are tracked only for competitors that have a website on file.
 - **Share of voice**: the brand's mentioning answers divided by the mentioning answers of all tracked brands.
-- **Audit score**: 100 × Σ(weight × check score) / Σ weights. Page-level checks score the fraction of crawled pages that pass.
+- **Audit score** (website health): 100 × Σ(weight × check score) / Σ weights. Page-level checks score the fraction of crawled pages that pass.
+- **AI visibility score**: the mean of the unprompted mention rate (answers to questions that don't name the business) over the assistants that have a completed test. Untested or unconfigured assistants are listed as excluded, not counted as zero.
+- **Average list position**: computed only from answers that contain a list of at least two items and include the business. Otherwise "not listed".
+- **Mentions your area**: share of answers that mention the project's city, region or service area. Not shown when no location is set.
+- **Local SEO completeness**: share of local checks passed. Checks that can't be decided (for example, no phone entered and none found) are "unknown" and excluded.
+- **Backlinks**: counts of pages verified by loading them. Follow/nofollow is reported only when the link's `rel` was read on the page.
 
 ### Action plan
 
@@ -190,16 +213,34 @@ Each run stores its provider, model, settings, competitor list and question IDs 
    - `conditions()`: everything that affects answers (it is stored with the run)
    - raise `ProviderError(message, fatal=..., retryable=...)` on failures. `fatal` aborts the run (for example, bad credentials).
 2. Register it in `PROVIDER_FACTORIES` in `app/providers/registry.py` and add its settings to `app/config.py`.
-3. Use the official SDK for that provider. Detection, metrics, storage and UI work unchanged. The UI's run button currently starts the `anthropic` provider; add a selector once there is more than one.
+3. Use the official SDK for that provider. Set `assistant` (display name), `experience` (what the API represents) and `supports_location`. Detection, metrics, storage, the overview and the multi-assistant run button pick it up automatically.
 
 ---
 
-## Deploying to production
+## Deploying: Vercel (frontend) + Render (backend)
+
+The frontend runs on Vercel; the API and Postgres run on Render from `render.yaml`. Users add their own API keys.
+
+1. **Render** (render.com) → New → **Blueprint** → connect this GitHub repo → Apply. This creates `answerscope-db` (Postgres) and `answerscope-api` (Docker), generates `AEO_SECRETS_KEY` and `AEO_PROXY_SECRET`, and turns off server keys. Migrations run on start. When it's live, note the URL (e.g. `https://answerscope-api.onrender.com`; `/api/health` returns `{"status":"ok"}`) and copy the value of `AEO_PROXY_SECRET` from the service's Environment tab.
+2. **Vercel** → Add New → Project → import the repo, set **Root Directory** to `frontend`, and add these environment variables before deploying:
+   - `BACKEND_URL` = the Render URL (no trailing slash)
+   - `BACKEND_PROXY_SECRET` = the `AEO_PROXY_SECRET` value from Render
+
+   Or with the CLI: `cd frontend && vercel link`, add both with `vercel env add`, then `vercel --prod`.
+3. Open the Vercel URL, sign up, add a key on **API keys**, and create a project.
+
+Notes:
+- The browser only talks to Vercel; Vercel forwards `/api/*` to Render with the proxy secret and the visitor's IP. Direct calls to the Render URL get 403 (except `/api/health`).
+- Render's free web service sleeps when idle (the first request then takes up to a minute) and has 512 MB RAM, so JavaScript rendering is limited to 4 pages per audit. Free Postgres expires after 30 days. Move both to paid plans for real use, and add a worker service (`JOB_MODE=worker`, command `python -m app.worker`) so jobs survive restarts.
+- `AEO_SECRETS_KEY` must not change after users save keys. Back it up.
+- Close sign-ups any time with `ALLOW_REGISTRATION=false` on Render.
+
+## Deploying with Docker Compose (own server)
 
 `docker-compose.yml` runs the production stack: Postgres, the API, a **separate job worker**, and the Next.js frontend as a standalone server.
 
 ```bash
-cp .env.production.example .env.production   # set POSTGRES_PASSWORD and ANTHROPIC_API_KEY
+cp .env.production.example .env.production   # set POSTGRES_PASSWORD, and AEO_SECRETS_KEY or provider keys
 docker compose --env-file .env.production up -d --build
 ```
 
@@ -219,7 +260,9 @@ For a managed setup, the same split works elsewhere: frontend on Vercel or a Nod
 - **robots.txt.** Disallowed pages are skipped and reported. If the homepage itself is disallowed, the audit stops.
 - **Input validation.** Inputs are validated with Pydantic: name lengths, at most 10 competitors, de-duplication, URL normalization.
 - **Accounts.** Passwords are hashed with scrypt (salted). Sessions are random 256-bit tokens in an `httpOnly`, `SameSite=Lax` cookie (`Secure` with `COOKIE_SECURE=true`); only a SHA-256 hash of each token is stored. Every API object is looked up through its project's owner, and other users' objects return 404 so IDs can't be probed. Login responses don't reveal whether an email has an account.
-- **Cost protection.** AI actions (visibility tests, AI question generation, AI fix drafts) are capped per user and globally per rolling 24 hours (`QUOTA_*` settings). Template outputs are free. Login attempts and write requests are rate-limited.
+- **Cost protection.** AI actions (visibility tests, AI question generation, AI fix drafts, backlink discovery) are capped per user and globally per rolling 24 hours (`QUOTA_*` settings). Actions on a user's own key don't count toward the global cap. Template outputs are free. Login attempts and write requests are rate-limited.
+- **Users' API keys.** Encrypted with Fernet (`AEO_SECRETS_KEY`) before storage; the API returns only the last 4 characters; keys are never logged, and each request or job builds its own settings copy, so one user's key is never used for another. OpenAI, Anthropic and Gemini keys are checked on save with a free model-list request to a fixed URL; others are checked on first use.
+- **Public API.** With `AEO_PROXY_SECRET`, the API only accepts requests carrying the frontend's secret (compared in constant time), so the rate limiter's client IP can't be spoofed by calling the API directly.
 - **JavaScript rendering.** The headless browser gets its own SSRF guard. Every browser request is intercepted, and only http(s) requests to the audited site (and its subdomains) that pass the public-IP check are allowed. Third-party requests, images, media and fonts are blocked. The site's hostname is pinned to its vetted IP inside Chromium, service workers are blocked, and page count and time are capped.
 - **Fix drafts.** AI drafts see only the crawled site text and must use placeholders for missing facts. Any number in a draft that doesn't appear on the site is flagged for review. Drafts are never applied automatically.
 
@@ -236,6 +279,9 @@ For a managed setup, the same split works elsewhere: frontend on Vercel or a Nod
 - Topic coverage and FAQ detection use heuristics on URLs, titles and headings of the crawled sample (15 pages by default), so they can miss content on pages that weren't crawled.
 - Mention detection is string matching. Ambiguous brand names can still produce false positives or negatives. The evidence snippets are shown so you can verify each one.
 - API answers are not the same as consumer ChatGPT, Claude, Gemini or Perplexity, which add personalization, memory and different search stacks. Answers also vary between runs.
-- There is one provider so far (Anthropic). Accounts are email + password only; there is no password reset or email verification yet.
+- Only providers with a key are tested. Results are API simulations of each assistant; Gemini's grounding returns redirect URLs, which are matched to domains by their titles.
+- List position is a heuristic (numbered/bulleted lists of 2+ items). Business extraction needs `NVIDIA_API_KEY` and only keeps names that appear verbatim in the answer.
+- Backlink discovery sees only what the search API returns: it is not a complete backlink index, and it shows no domain authority. Reviews and ratings are not collected.
+- Accounts are email + password only; there is no password reset or email verification yet.
 - The rate limiter is in-memory, so each API process limits independently. Behind several API processes, add a shared limiter (for example at the reverse proxy). Quotas are database-backed and global.
 - Recommendations are rule-based and are rebuilt from the latest audit and run. They improve clarity and coverage but **do not guarantee** AI mentions, citations or rankings.

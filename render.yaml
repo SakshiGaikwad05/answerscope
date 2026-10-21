@@ -1,0 +1,44 @@
+# Render Blueprint: Postgres + the FastAPI backend. The Next.js frontend is deployed on Vercel
+# (see README "Deploying: Vercel + Render"). Apply with Render Dashboard → New → Blueprint.
+databases:
+  - name: answerscope-db
+    databaseName: aeo
+    user: aeo
+    plan: free # free Postgres expires after 30 days on Render; pick a paid plan to keep data
+
+services:
+  - type: web
+    name: answerscope-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free # free instances sleep when idle and have 512 MB RAM; a paid plan is more reliable
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: answerscope-db
+          property: connectionString
+      # Encrypts users' saved API keys. Keep it stable: changing it makes saved keys unreadable.
+      - key: AEO_SECRETS_KEY
+        generateValue: true
+      # Copy this value into Vercel as BACKEND_PROXY_SECRET; the API then only accepts calls from the frontend.
+      - key: AEO_PROXY_SECRET
+        generateValue: true
+      # Users bring their own provider keys; the server's own keys (if any) are never used for them.
+      - key: AEO_USE_SERVER_API_KEYS
+        value: "false"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ALLOW_REGISTRATION
+        value: "true"
+      # One service runs jobs in-process. With a paid plan, add a worker (JOB_MODE=worker, command: python -m app.worker).
+      - key: JOB_MODE
+        value: inline
+      # Keep headless-browser rendering small enough for a 512 MB instance
+      - key: RENDER_MAX_PAGES
+        value: "4"
+      - key: CRAWL_MAX_PAGES
+        value: "12"
+      - key: LOG_LEVEL
+        value: INFO

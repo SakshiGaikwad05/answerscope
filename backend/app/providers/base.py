@@ -31,6 +31,26 @@ class ProviderNotConfiguredError(ProviderError):
 
 
 @dataclass
+class SearchLocation:
+    """Approximate user location passed to providers that localize web search."""
+
+    city: str | None = None
+    region: str | None = None
+    country: str | None = None  # ISO 3166-1 alpha-2
+
+    def is_empty(self) -> bool:
+        return not (self.city or self.region or self.country)
+
+    def as_user_location(self) -> dict:
+        """The {"type": "approximate", ...} shape used by the OpenAI, Anthropic and Perplexity APIs."""
+        loc = {"type": "approximate"}
+        for key in ("city", "region", "country"):
+            if getattr(self, key):
+                loc[key] = getattr(self, key)
+        return loc
+
+
+@dataclass
 class ProviderAnswer:
     text: str
     model: str
@@ -43,6 +63,12 @@ class ProviderAnswer:
 class AIProvider(ABC):
     name: str = "base"
     display_name: str = "Base provider"
+    # Which consumer assistant this approximates ("ChatGPT", "Claude", ...)
+    assistant: str = ""
+    # How the measured answers relate to what people see in the consumer app
+    experience: str = "API answers; may differ from the consumer app."
+    # True if answer() accepts a `location` keyword to localize web search
+    supports_location: bool = False
 
     @abstractmethod
     def is_configured(self) -> bool: ...
@@ -60,7 +86,10 @@ class AIProvider(ABC):
 
     @abstractmethod
     def answer(self, question: str) -> ProviderAnswer:
-        """Ask the provider the question exactly as a user would and return the answer."""
+        """Ask the provider the question exactly as a user would and return the answer.
+
+        Providers with `supports_location = True` also accept `location: SearchLocation | None`.
+        """
 
     def complete_json(self, system: str, prompt: str, schema: dict) -> dict:
         """Return a JSON object matching `schema`. Optional; used for question generation."""
@@ -70,6 +99,8 @@ class AIProvider(ABC):
         return {
             "name": self.name,
             "display_name": self.display_name,
+            "assistant": self.assistant,
+            "experience": self.experience,
             "configured": self.is_configured(),
             "model": self.model,
             "setup_instructions": None if self.is_configured() else self.setup_instructions(),
